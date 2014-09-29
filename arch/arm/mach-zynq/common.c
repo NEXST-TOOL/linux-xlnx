@@ -102,6 +102,16 @@ static void __init zynq_data_prefetch_enable(void *info)
 }
 #endif
 
+
+static void enable_cpu_counters(void* data)
+{
+	/* enable user-mode performance counter */
+	asm volatile("mcr p15, 0, %0, c9, c14, 0" :: "r"(1));
+
+	/* enable all counters */
+	asm volatile("mcr p15, 0, %0, c9, c12, 1" :: "r"(0x8000000f));
+}
+
 static void __init zynq_init_late(void)
 {
 	zynq_pm_late_init();
@@ -109,6 +119,8 @@ static void __init zynq_init_late(void)
 #ifdef CONFIG_XILINX_L1_PREFETCH
 	on_each_cpu(zynq_data_prefetch_enable, NULL, 0);
 #endif
+	
+	on_each_cpu(enable_cpu_counters, NULL, 1);
 }
 
 /**
