@@ -423,6 +423,10 @@ struct axienet_local {
 	struct net_device *ndev;
 	struct device *dev;
 
+  //- XAPP1082
+  struct timer_list phy_timer;
+  u8 gmii_addr;
+
 	/* Connection to PHY device */
 	struct phy_device *phy_dev;	/* Pointer to PHY device */
 	struct device_node *phy_node;
@@ -463,6 +467,7 @@ struct axienet_local {
 
 	u32 coalesce_count_rx;
 	u32 coalesce_count_tx;
+	struct gpio_desc *gpio_rst;
 };
 
 /**

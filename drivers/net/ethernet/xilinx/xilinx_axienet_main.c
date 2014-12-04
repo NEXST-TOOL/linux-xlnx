@@ -33,7 +33,7 @@
 #include <linux/phy.h>
 #include <linux/mii.h>
 #include <linux/ethtool.h>
-
+#include <linux/gpio/consumer.h>
 #include "xilinx_axienet.h"
 
 /* Descriptors defines for Tx and Rx DMA - 2^n for the best performance */
@@ -111,6 +111,23 @@ static struct axienet_option axienet_options[] = {
 	},
 	{}
 };
+
+//XAPP1082
+//--------------------------
+typedef enum DUPLEX { UNKNOWN_DUPLEX, HALF_DUPLEX, FULL_DUPLEX } DUPLEX;
+static int get_phy_status(struct net_device *dev, DUPLEX * duplex, int *linkup);
+/* Queues with locks */
+LIST_HEAD(receivedQueue);
+static spinlock_t receivedQueueSpin;
+
+LIST_HEAD(sentQueue);
+int axienet_mdio_setup_local(struct axienet_local *lp, struct device_node *np);
+void axienet_mdio_teardown_local(struct axienet_local *lp);
+static spinlock_t sentQueueSpin;
+void set_mac_speed(struct axienet_local *lp);
+void XAxiEthernet_Start(struct axienet_local *lp);
+//--------------------------
+
 
 /**
  * axienet_dma_in32 - Memory mapped Axi DMA register read
@@ -230,6 +247,8 @@ static int axienet_dma_bd_init(struct net_device *ndev)
 						     skb->data,
 						     lp->max_frm_size,
 						     DMA_FROM_DEVICE);
+		if (dma_mapping_error(ndev->dev.parent , lp->rx_bd_v[i].phys))
+			printk(KERN_ERR "dma_mapping_error :: \n");
 		lp->rx_bd_v[i].cntrl = lp->max_frm_size;
 	}
 
@@ -469,6 +488,7 @@ static void axienet_device_reset(struct net_device *ndev)
 	struct axienet_local *lp = netdev_priv(ndev);
 
 	__axienet_device_reset(lp, &ndev->dev, XAXIDMA_TX_CR_OFFSET);
+	//printk(KERN_ERR "%s :: Skip DMA RX and TX RESET \n",__func__);
 	__axienet_device_reset(lp, &ndev->dev, XAXIDMA_RX_CR_OFFSET);
 
 	lp->max_frm_size = XAE_MAX_VLAN_FRAME_SIZE;
@@ -492,8 +512,17 @@ static void axienet_device_reset(struct net_device *ndev)
 
 	axienet_status = axienet_ior(lp, XAE_RCW1_OFFSET);
 	axienet_status &= ~XAE_RCW1_RX_MASK;
+	//axienet_status &= ~XAE_RCW1_RST_MASK;
+	//printk(KERN_ERR "RCW1 RST \n");
 	axienet_iow(lp, XAE_RCW1_OFFSET, axienet_status);
-
+	#if 0
+	msleep(1);
+	axienet_status = axienet_ior(lp, XAE_TC_OFFSET);
+	axienet_status &= ~XAE_TC_RST_MASK;
+	printk(KERN_ERR "TCW RST \n");
+	axienet_iow(lp, XAE_TC_OFFSET, axienet_status);
+	msleep(2);
+	#endif
 	axienet_status = axienet_ior(lp, XAE_IP_OFFSET);
 	if (axienet_status & XAE_INT_RXRJECT_MASK)
 		axienet_iow(lp, XAE_IS_OFFSET, XAE_INT_RXRJECT_MASK);
@@ -692,6 +721,8 @@ static int axienet_start_xmit(struct sk_buff *skb, struct net_device *ndev)
 	cur_p->cntrl = skb_headlen(skb) | XAXIDMA_BD_CTRL_TXSOF_MASK;
 	cur_p->phys = dma_map_single(ndev->dev.parent, skb->data,
 				     skb_headlen(skb), DMA_TO_DEVICE);
+	if(dma_mapping_error(ndev->dev.parent, cur_p->phys))
+		printk(KERN_ERR "dma_mapping_error \n");
 
 	for (ii = 0; ii < num_frag; ii++) {
 		++lp->tx_bd_tail;
@@ -702,6 +733,9 @@ static int axienet_start_xmit(struct sk_buff *skb, struct net_device *ndev)
 					     skb_frag_address(frag),
 					     skb_frag_size(frag),
 					     DMA_TO_DEVICE);
+		if(dma_mapping_error(ndev->dev.parent,cur_p->phys))
+			printk(KERN_ERR "dma_mapping_error \n");
+
 		cur_p->cntrl = skb_frag_size(frag);
 	}
 
@@ -767,7 +801,7 @@ static void axienet_recv(struct net_device *ndev)
 				skb->ip_summed = CHECKSUM_UNNECESSARY;
 			}
 		} else if ((lp->features & XAE_FEATURE_PARTIAL_RX_CSUM) != 0 &&
-			   skb->protocol == htons(ETH_P_IP) &&
+			   skb->protocol == __constant_htons(ETH_P_IP) &&
 			   skb->len > 64) {
 			skb->csum = be32_to_cpu(cur_p->app3 & 0xFFFF);
 			skb->ip_summed = CHECKSUM_COMPLETE;
@@ -785,6 +819,8 @@ static void axienet_recv(struct net_device *ndev)
 		cur_p->phys = dma_map_single(ndev->dev.parent, new_skb->data,
 					     lp->max_frm_size,
 					     DMA_FROM_DEVICE);
+		if ( dma_mapping_error(ndev->dev.parent, cur_p->phys))
+			printk(KERN_ERR "dma_mapping_error \n");
 		cur_p->cntrl = lp->max_frm_size;
 		cur_p->status = 0;
 		cur_p->sw_id_offset = (u32) new_skb;
@@ -899,6 +935,55 @@ out:
 	return IRQ_HANDLED;
 }
 
+//XAPP1082
+//-----------------------
+/*
+ * This routine is used for two purposes.  The first is to keep the
+ * EMAC's duplex setting in sync with the PHY's.  The second is to keep
+ * the system apprised of the state of the link.  Note that this driver
+ * does not configure the PHY.  Either the PHY should be configured for
+ * auto-negotiation or it should be handled by something like mii-tool. */
+static void poll_gmii(unsigned long data)
+{
+  struct net_device *dev;
+  struct axienet_local *lp;
+  DUPLEX phy_duplex;
+  int phy_carrier;
+  int netif_carrier;
+
+  dev = (struct net_device *) data;
+  lp = (struct axienet_local *) netdev_priv(dev);
+
+  /* First, find out what's going on with the PHY. */
+  //printk("poll_gmii\n");
+  if (get_phy_status(dev, &phy_duplex, &phy_carrier)) {
+    printk(KERN_ERR "%s: XAxiEthernet: terminating link monitoring.\n",
+           dev->name);
+    return;
+  }
+  netif_carrier = netif_carrier_ok(dev) != 0;
+  if (phy_carrier != netif_carrier) {
+    if (phy_carrier) {
+      printk(KERN_INFO
+             "%s: XAxiEthernet: PHY Link carrier restored.\n",
+             dev->name);
+      netif_carrier_on(dev);
+      set_mac_speed(lp);
+    }
+    else {
+      printk(KERN_INFO "%s: XAxiEthernet: PHY Link carrier lost.\n",
+             dev->name);
+      netif_carrier_off(dev);
+    }
+  }
+
+  /* Set up the timer so we'll get called again in 2 seconds. */
+  lp->phy_timer.expires = jiffies + 2 * HZ;
+  add_timer(&lp->phy_timer);
+}
+//-------------------------
+
+
 static void axienet_dma_err_handler(unsigned long data);
 
 /**
@@ -939,6 +1024,9 @@ static int axienet_open(struct net_device *ndev)
 	if (ret < 0)
 		return ret;
 
+	axienet_mdio_setup_local(lp,lp->dev->of_node);
+//XAPP1082
+  #if 0
 	if (lp->phy_node) {
 		if (lp->phy_type == XAE_PHY_TYPE_GMII ||
 		    lp->phy_type == XAE_PHY_TYPE_1000BASE_X) {
@@ -956,6 +1044,8 @@ static int axienet_open(struct net_device *ndev)
 		else
 			phy_start(lp->phy_dev);
 	}
+  #endif
+//-------------------------
 
 	/* Enable tasklets for Axi DMA error handling */
 	tasklet_init(&lp->dma_err_tasklet, axienet_dma_err_handler,
@@ -969,6 +1059,28 @@ static int axienet_open(struct net_device *ndev)
 	ret = request_irq(lp->rx_irq, axienet_rx_irq, 0, ndev->name, ndev);
 	if (ret)
 		goto err_rx_irq;
+
+//XAPP1082
+//-------------
+  /* Start TEMAC device */
+  XAxiEthernet_Start(lp);
+
+  /* We're ready to go. */
+  netif_start_queue(ndev);
+  /* Set up the PHY monitoring timer. */
+  lp->phy_timer.expires = jiffies + 2 * HZ;
+  lp->phy_timer.data = (unsigned long) ndev;
+  lp->phy_timer.function = &poll_gmii;
+  init_timer(&lp->phy_timer);
+  add_timer(&lp->phy_timer);
+
+  INIT_LIST_HEAD(&sentQueue);
+  INIT_LIST_HEAD(&receivedQueue);
+
+  spin_lock_init(&sentQueueSpin);
+  spin_lock_init(&receivedQueueSpin);
+//-------------
+
 
 	return 0;
 
@@ -1014,9 +1126,14 @@ static int axienet_stop(struct net_device *ndev)
 	free_irq(lp->tx_irq, ndev);
 	free_irq(lp->rx_irq, ndev);
 
-	if (lp->phy_dev)
-		phy_disconnect(lp->phy_dev);
+//XAPP1082
+	//if (lp->phy_dev)
+	//	phy_disconnect(lp->phy_dev);
 	lp->phy_dev = NULL;
+//XAPP1082
+  netif_stop_queue(ndev);
+  del_timer_sync(&lp->phy_timer);
+  netif_carrier_off(ndev);
 
 	axienet_dma_bd_release(ndev);
 	return 0;
@@ -1540,6 +1657,7 @@ static int axienet_probe(struct platform_device *pdev)
 	if (!ndev)
 		return -ENOMEM;
 
+	ether_setup(ndev);
 	platform_set_drvdata(pdev, ndev);
 
 	SET_NETDEV_DEV(ndev, &pdev->dev);
@@ -1555,8 +1673,9 @@ static int axienet_probe(struct platform_device *pdev)
 	/* Map device registers */
 	ethres = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 	lp->regs = devm_ioremap_resource(&pdev->dev, ethres);
-	if (IS_ERR(lp->regs)) {
-		ret = PTR_ERR(lp->regs);
+	if (!lp->regs) {
+		dev_err(&pdev->dev, "could not map Axi Ethernet regs.\n");
+		ret = -ENOMEM;
 		goto free_netdev;
 	}
 
@@ -1629,8 +1748,9 @@ static int axienet_probe(struct platform_device *pdev)
 		goto free_netdev;
 	}
 	lp->dma_regs = devm_ioremap_resource(&pdev->dev, &dmares);
-	if (IS_ERR(lp->dma_regs)) {
-		ret = PTR_ERR(lp->dma_regs);
+	if (!lp->dma_regs) {
+		dev_err(&pdev->dev, "could not map DMA regs\n");
+		ret = -ENOMEM;
 		goto free_netdev;
 	}
 	lp->rx_irq = irq_of_parse_and_map(np, 1);
@@ -1653,10 +1773,20 @@ static int axienet_probe(struct platform_device *pdev)
 
 	lp->coalesce_count_rx = XAXIDMA_DFT_RX_THRESHOLD;
 	lp->coalesce_count_tx = XAXIDMA_DFT_TX_THRESHOLD;
+//#define AXI_ETH_GT_RST
+#ifdef  AXI_ETH_GT_RST
+	lp->gpio_rst = devm_gpiod_get(&pdev->dev, "gt-reset");
+        if (PTR_ERR(lp->gpio_rst) == -EPROBE_DEFER)
+                return -EPROBE_DEFER;
+        if (!IS_ERR(lp->gpio_rst))
+                gpiod_direction_output(lp->gpio_rst, 0);
 
+	if (!IS_ERR(lp->gpio_rst))
+             gpiod_set_value_cansleep(lp->gpio_rst, 0);
+#endif
 	lp->phy_node = of_parse_phandle(pdev->dev.of_node, "phy-handle", 0);
 	if (lp->phy_node) {
-		ret = axienet_mdio_setup(lp, pdev->dev.of_node);
+		ret = axienet_mdio_setup_local(lp, pdev->dev.of_node);  //XAPP1082
 		if (ret)
 			dev_warn(&pdev->dev, "error registering MDIO bus\n");
 	}
@@ -1664,7 +1794,6 @@ static int axienet_probe(struct platform_device *pdev)
 	ret = register_netdev(lp->ndev);
 	if (ret) {
 		dev_err(lp->dev, "register_netdev() error (%i)\n", ret);
-		axienet_mdio_teardown(lp);
 		goto free_netdev;
 	}
 
@@ -1681,10 +1810,11 @@ static int axienet_remove(struct platform_device *pdev)
 	struct net_device *ndev = platform_get_drvdata(pdev);
 	struct axienet_local *lp = netdev_priv(ndev);
 
-	axienet_mdio_teardown(lp);
+	axienet_mdio_teardown_local(lp);  //XAPP1082
 	unregister_netdev(ndev);
 
-	of_node_put(lp->phy_node);
+	if (lp->phy_node)
+		of_node_put(lp->phy_node);
 	lp->phy_node = NULL;
 
 	free_netdev(ndev);
@@ -1696,12 +1826,277 @@ static struct platform_driver axienet_driver = {
 	.probe = axienet_probe,
 	.remove = axienet_remove,
 	.driver = {
+		 .owner = THIS_MODULE,
 		 .name = "xilinx_axienet",
 		 .of_match_table = axienet_of_match,
 	},
 };
 
-module_platform_driver(axienet_driver);
+//XAPP1082
+
+static int __init axienet_init(void)
+{
+  platform_driver_register(&axienet_driver);
+  return 0;
+}
+static void __exit axienet_exit(void)
+{
+  platform_driver_unregister(&axienet_driver);
+}
+
+/*
+ * MDIO bus driver for the Xilinx Axi Ethernet device
+ *
+ * Copyright (c) 2009 Secret Lab Technologies, Ltd.
+ * Copyright (c) 2010 - 2011 Michal Simek <monstr@monstr.eu>
+ * Copyright (c) 2010 - 2011 PetaLogix
+ * Copyright (c) 2010 - 2012 Xilinx, Inc. All rights reserved.
+ */
+
+#include <linux/of_address.h>
+#include <linux/of_mdio.h>
+#include <linux/jiffies.h>
+
+#include "xilinx_axienet.h"
+
+#define MAX_MDIO_FREQ   2500000 /* 2.5 MHz */
+#define DEFAULT_CLOCK_DIVISOR XAE_MDIO_DIV_DFT
+
+/* Wait till MDIO interface is ready to accept a new transaction.*/
+int axienet_mdio_wait_until_ready(struct axienet_local *lp)
+{
+  //printk(KERN_ERR "axienet_mdio_wait_until_ready \n");
+
+  long end = jiffies + 2;
+  while (!(axienet_ior(lp, XAE_MDIO_MCR_OFFSET) &
+     XAE_MDIO_MCR_READY_MASK)) {
+    if (end - jiffies <= 0) {
+      WARN_ON(1);
+      return -ETIMEDOUT;
+    }
+    udelay(1);
+  }
+  return 0;
+}
+
+static int axienet_mdio_read_local(struct axienet_local *lp, int phy_id, int reg)
+{
+  u32 rc;
+  int ret;
+  u32 value;
+
+  ret = axienet_mdio_wait_until_ready(lp);
+  if (ret < 0)
+    return ret;
+
+  value = (((phy_id << XAE_MDIO_MCR_PHYAD_SHIFT) &
+          XAE_MDIO_MCR_PHYAD_MASK) |
+         ((reg << XAE_MDIO_MCR_REGAD_SHIFT) &
+          XAE_MDIO_MCR_REGAD_MASK) |
+         XAE_MDIO_MCR_INITIATE_MASK |
+         XAE_MDIO_MCR_OP_READ_MASK);
+  axienet_iow(lp, XAE_MDIO_MCR_OFFSET, value );
+
+  ret = axienet_mdio_wait_until_ready(lp);
+  if (ret < 0)
+    return ret;
+
+  rc = axienet_ior(lp, XAE_MDIO_MRD_OFFSET) & 0x0000FFFF;
+
+  dev_dbg(lp->dev, "axienet_mdio_read_local(phy_id=%i, reg=%x) == %x\n",
+    phy_id, reg, rc);
+
+  return rc;
+}
+
+static int axienet_mdio_write_local(struct axienet_local *lp, int phy_id, int reg,
+            u16 val)
+{
+  int ret;
+
+
+  dev_dbg(lp->dev, "axienet_mdio_write_local(phy_id=%i, reg=%x, val=%x)\n",
+    phy_id, reg, val);
+
+
+  ret = axienet_mdio_wait_until_ready(lp);
+  if (ret < 0)
+    return ret;
+
+  axienet_iow(lp, XAE_MDIO_MWD_OFFSET, (u32) val);
+
+  val = (((phy_id << XAE_MDIO_MCR_PHYAD_SHIFT) &
+          XAE_MDIO_MCR_PHYAD_MASK) |
+         ((reg << XAE_MDIO_MCR_REGAD_SHIFT) &
+          XAE_MDIO_MCR_REGAD_MASK) |
+         XAE_MDIO_MCR_INITIATE_MASK |
+         XAE_MDIO_MCR_OP_WRITE_MASK);
+  axienet_iow(lp, XAE_MDIO_MCR_OFFSET, val);
+
+  ret = axienet_mdio_wait_until_ready(lp);
+  if (ret < 0)
+    return ret;
+  return 0;
+}
+
+int axienet_mdio_setup_local(struct axienet_local *lp, struct device_node *np)
+{
+  int ret;
+  u32 clk_div;
+  u16 Register;
+  //struct mii_bus *bus;
+  //struct resource res;
+  struct device_node *np1;
+  struct device_node *npp = 0; /* the ethernet controller device node */
+
+  np1 = of_get_parent(lp->phy_node);
+  if (np1)
+    npp = of_get_parent(np1);
+  if (!npp) {
+    dev_warn(lp->dev,
+      "Could not find ethernet controller device node.");
+    dev_warn(lp->dev, "Setting MDIO clock divisor to default %d\n",
+           DEFAULT_CLOCK_DIVISOR);
+
+    printk(KERN_ERR
+      "Could not find ethernet controller device node.");
+    printk(KERN_ERR "Setting MDIO clock divisor to default %d\n",
+           DEFAULT_CLOCK_DIVISOR);
+
+    clk_div = DEFAULT_CLOCK_DIVISOR;
+  } else {
+    u32 *property_p;
+
+    property_p = (uint32_t *)of_get_property(npp,
+            "clock-frequency", NULL);
+    if (!property_p) {
+      dev_warn(lp->dev, "Could not find clock ethernet " \
+                  "controller property.");
+      dev_warn(lp->dev,
+         "Setting MDIO clock divisor to default %d\n",
+              DEFAULT_CLOCK_DIVISOR);
+
+      printk(KERN_ERR "Could not find clock ethernet " \
+                  "controller property.");
+      printk(KERN_ERR
+         "Setting MDIO clock divisor to default %d\n",
+              DEFAULT_CLOCK_DIVISOR);
+
+      clk_div = DEFAULT_CLOCK_DIVISOR;
+    } else {
+      u32 host_clock = be32_to_cpup(property_p);
+
+      clk_div = (host_clock / (MAX_MDIO_FREQ * 2)) - 1;
+
+      /* If there is any remainder from the division of
+       * fHOST / (MAX_MDIO_FREQ * 2), then we need to add 1
+       * to the clock divisor or we will surely be
+       * above 2.5 MHz */
+      if (host_clock % (MAX_MDIO_FREQ * 2))
+        clk_div++;
+      dev_dbg(lp->dev, "Setting MDIO clock divisor to %u " \
+            "based on %u Hz host clock.\n",
+            clk_div, host_clock);
+
+      printk(KERN_ERR "Setting MDIO clock divisor to %u " \
+            "based on %u Hz host clock.\n",
+            clk_div, host_clock);
+    }
+  }
+  axienet_iow(lp, XAE_MDIO_MC_OFFSET, (((u32)clk_div) |
+            XAE_MDIO_MC_MDIOEN_MASK));
+  //===============
+  lp->gmii_addr = 3;
+  printk(KERN_ERR "axienet_mdio_setup_local , gmii addr = %d\n",
+lp->gmii_addr);
+
+  ret = axienet_mdio_wait_until_ready(lp);
+  if (ret < 0)
+    return ret;
+
+  printk(KERN_ERR "Using PCS-PMA, 1000BASE-X specific initialization\n");
+  Register = axienet_mdio_read_local(lp, lp->gmii_addr, 0);
+  // - Reset core
+  //axienet_mdio_write_local(lp, lp->gmii_addr, 0, (Register | 0x8000));
+  // - Clear Isolate bit for normal operation
+  axienet_mdio_write_local(lp, lp->gmii_addr, 0, (Register & 0xFBFF));
+  Register = axienet_mdio_read_local(lp, lp->gmii_addr, 0);
+  printk(KERN_ERR "1000BASE-X: PHY Control Reg = %x\n", Register);
+  //===============
+
+  ret = axienet_mdio_wait_until_ready(lp);
+  if (ret < 0)
+    return ret;
+
+  printk(KERN_ERR "Success .. mdiobus_register \n");
+  return 0;
+}
+
+void axienet_mdio_teardown_local(struct axienet_local *lp)
+{
+  printk(KERN_ERR "axienet_mdio_teardown_local \n");
+
+  mdiobus_unregister(lp->mii_bus);
+  kfree(lp->mii_bus->irq);
+  mdiobus_free(lp->mii_bus);
+  lp->mii_bus = NULL;
+}
+
+/*
+ * The PHY registers read here should be standard registers in all PHY chips
+ */
+static int get_phy_status(struct net_device *dev, DUPLEX * duplex, int
+*linkup)
+{
+  struct axienet_local *lp = (struct axienet_local *) netdev_priv(dev);
+  u32 reg1, reg2;
+
+  reg1 = axienet_mdio_read_local(lp, lp->gmii_addr, MII_BMCR);
+  *duplex = FULL_DUPLEX;
+
+  reg2 = axienet_mdio_read_local(lp, lp->gmii_addr, MII_BMSR);
+  *linkup = (reg2 & BMSR_LSTATUS) != 0;
+
+  //printk(KERN_ERR "get_phy_status: BMCR=0x%x, BMSR=0x%x, duplex=%d,
+  //linkup=%d\n", reg1, reg2, *duplex, *linkup);
+  return 0;
+}
+
+void set_mac_speed(struct axienet_local *lp)
+{
+  //u32 EmmcReg;
+  //u8  TemacType;
+  //u8  PhyType;
+  //int  IsHalfDuplexOptSet;
+  //u8  SetSpeed = TRUE;
+
+  axienet_iow(lp, XAE_EMMC_OFFSET, 0x80000000);
+}
+
+void XAxiEthernet_Start(struct axienet_local *lp)
+{
+  u32 Reg;
+
+  Reg = axienet_ior(lp, XAE_TC_OFFSET);
+  if (!(Reg & XAE_TC_TX_MASK)) {
+    printk(KERN_ERR "transmitter not enabled, enabling now\n");
+    axienet_iow(lp, XAE_TC_OFFSET, Reg | XAE_TC_TX_MASK);
+    printk(KERN_ERR "TC_OFFSET set to : 0x%x\n", axienet_ior(lp,
+XAE_TC_OFFSET) );
+  }
+
+  Reg = axienet_ior(lp, XAE_RCW1_OFFSET);
+  if (!(Reg & XAE_RCW1_RX_MASK)) {
+    printk(KERN_ERR "receiver not enabled, enabling now\n");
+    axienet_iow(lp, XAE_RCW1_OFFSET, Reg | XAE_RCW1_RX_MASK);
+    printk(KERN_ERR "RCW1_OFFSET set to : 0x%x\n", axienet_ior(lp,
+XAE_RCW1_OFFSET) );
+  }
+}
+
+//module_platform_driver(axienet_of_driver);
+module_init(axienet_init);
+module_exit(axienet_exit);
 
 MODULE_DESCRIPTION("Xilinx Axi Ethernet driver");
 MODULE_AUTHOR("Xilinx");

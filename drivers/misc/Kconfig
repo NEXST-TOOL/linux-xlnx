@@ -486,6 +486,17 @@ config USB_SWITCH_FSA9480
 	  stereo and mono audio, video, microphone and UART data to use
 	  a common connector port.
 
+config SI5324
+	tristate "Silicon Labs Si5324 Clock Generator"
+	depends on I2C && SYSFS
+	default y
+	help
+	  If you say yes here you get support for the Silicon Labs Si5324
+	  digital clock generator.
+
+	  To compile this driver as a module, choose M here: the module
+	  will be called si5324
+
 config LATTICE_ECP3_CONFIG
 	tristate "Lattice ECP3 FPGA bitstream configuration via SPI"
 	depends on SPI && SYSFS

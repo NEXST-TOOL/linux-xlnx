@@ -26,12 +26,14 @@ config XILINX_EMACLITE
 	  This driver supports the 10/100 Ethernet Lite from Xilinx.
 
 config XILINX_AXI_EMAC
-	tristate "Xilinx 10/100/1000 AXI Ethernet support"
+  tristate "Xilinx AXI Ethernet, using 1000BASE-X interface"
 	depends on (MICROBLAZE || ARCH_ZYNQ)
-	select PHYLIB
+  default m
+#	select PHYLIB
 	---help---
-	  This driver supports the 10/100/1000 Ethernet from Xilinx for the
-	  AXI bus interface used in Xilinx Virtex FPGAs.
+   This hardware supports 10/100/1000 Ethernet from Xilinx for the
+   AXI bus interface. However, the 1000BASE-X interface supports only 1000Mbps.
+   Hence, this driver supports only 1000Mbps.
 
 config XILINX_LL_TEMAC
 	tristate "Xilinx LL TEMAC (LocalLink Tri-mode Ethernet MAC) driver"
@@ -40,6 +42,16 @@ config XILINX_LL_TEMAC
 	---help---
 	  This driver supports the Xilinx 10/100/1000 LocalLink TEMAC
 	  core used in Xilinx Spartan and Virtex FPGAs
+
+config XILINX_PS_EMAC_EMIO
+ tristate "Xilinx PS EMAC, using 1000BASE-X interface"
+ depends on ARCH_ZYNQ
+ default m
+#  select PHYLIB
+ ---help---
+   This hardware supports 10/100/1000 Ethernet from Xilinx for the
+   AXI bus interface. However, the 1000BASE-X interface supports only 1000Mbps.
+   Hence, this driver supports only 1000Mbps.
 
 config XILINX_PS_EMAC
 	tristate "Xilinx Zynq tri-speed EMAC support"
