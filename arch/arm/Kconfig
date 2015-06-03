@@ -302,6 +302,7 @@ choice
 	prompt "ARM system type"
 	default ARCH_VERSATILE if !MMU
 	default ARCH_MULTIPLATFORM if MMU
+	default y
 
 config ARCH_MULTIPLATFORM
 	bool "Allow multiple platforms to be selected"
@@ -1452,6 +1453,20 @@ source "drivers/pcmcia/Kconfig"
 endmenu
 
 menu "Kernel Features"
+
+config ARCH_MEMORY_PROBE
+	def_bool y
+	depends on MEMORY_HOTPLUG
+
+config ARCH_ENABLE_MEMORY_HOTPLUG
+	def_bool y
+
+config ARCH_ENABLE_MEMORY_HOTREMOVE
+	def_bool y
+
+config ARCH_SPARSEMEM_ENABLE
+	bool
+	default y
 
 config HAVE_SMP
 	bool

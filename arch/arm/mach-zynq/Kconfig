@@ -18,6 +18,7 @@ config ARCH_ZYNQ
 	select MFD_SYSCON
 	select MIGHT_HAVE_CACHE_L2X0
 	select MIGHT_HAVE_PCI
+	select NEED_MACH_MEMORY_H
 	help
 	  Support for Xilinx Zynq ARM Cortex A9 Platform
 

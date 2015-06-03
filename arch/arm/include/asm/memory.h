@@ -21,7 +21,7 @@
 #include <asm/cache.h>
 
 #ifdef CONFIG_NEED_MACH_MEMORY_H
-#include <mach/memory.h>
+#include <../../mach-zynq/include/mach/memory.h>
 #endif
 
 /*

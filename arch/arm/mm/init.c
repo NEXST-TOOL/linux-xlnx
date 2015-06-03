@@ -655,3 +655,28 @@ static int __init keepinitrd_setup(char *__unused)
 
 __setup("keepinitrd", keepinitrd_setup);
 #endif
+
+#ifdef CONFIG_MEMORY_HOTPLUG
+int arch_add_memory(int nid, u64 start, u64 size)
+{
+	pg_data_t	*pgdat;
+	
+	struct zone *zone;
+
+	unsigned long start_pfn = start >> PAGE_SHIFT;
+	unsigned long nr_pages = size >> PAGE_SHIFT;
+
+	int ret;
+
+	pgdat = NODE_DATA(nid);
+
+	zone = pgdat->node_zones + ZONE_HIGHMEM;
+
+	ret = __add_pages(nid, zone, start_pfn, nr_pages);
+
+	if (ret)
+		printk("%s: Problem encountered in __add_pages() as ret=%d\n", __func__, ret);
+
+	return ret;
+}
+#endif
