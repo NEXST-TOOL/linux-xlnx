@@ -20,8 +20,21 @@
 
 #include "nvmet.h"
 
-static struct config_item_type nvmet_host_type;
-static struct config_item_type nvmet_subsys_type;
+static const struct config_item_type nvmet_host_type;
+static const struct config_item_type nvmet_subsys_type;
+
+static LIST_HEAD(nvmet_ports_list);
+struct list_head *nvmet_ports = &nvmet_ports_list;
+
+static const struct nvmet_transport_name {
+	u8		type;
+	const char	*name;
+} nvmet_transport_names[] = {
+	{ NVMF_TRTYPE_RDMA,	"rdma" },
+	{ NVMF_TRTYPE_FC,	"fc" },
+	{ NVMF_TRTYPE_TCP,	"tcp" },
+	{ NVMF_TRTYPE_LOOP,	"loop" },
+};
 
 /*
  * nvmet_port Generic ConfigFS definitions.
@@ -729,7 +742,7 @@ static struct configfs_item_operations nvmet_subsys_item_ops = {
 	.release		= nvmet_subsys_release,
 };
 
-static struct config_item_type nvmet_subsys_type = {
+static const struct config_item_type nvmet_subsys_type = {
 	.ct_item_ops		= &nvmet_subsys_item_ops,
 	.ct_attrs		= nvmet_subsys_attrs,
 	.ct_owner		= THIS_MODULE,
@@ -940,7 +953,7 @@ static struct configfs_item_operations nvmet_host_item_ops = {
 	.release		= nvmet_host_release,
 };
 
-static struct config_item_type nvmet_host_type = {
+static const struct config_item_type nvmet_host_type = {
 	.ct_item_ops		= &nvmet_host_item_ops,
 	.ct_owner		= THIS_MODULE,
 };
