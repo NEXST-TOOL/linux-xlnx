@@ -633,8 +633,18 @@ static void __init build_mem_type_table(void)
 pgprot_t phys_mem_access_prot(struct file *file, unsigned long pfn,
 			      unsigned long size, pgprot_t vma_prot)
 {
+	/*print pfn value for mmap start address*/
+	printk(KERN_ERR "current pfn: 0x%08x\nsize: 0x%08x\n", pfn, size);
+
 	if (!pfn_valid(pfn))
-		return pgprot_noncached(vma_prot);
+	{
+		//if mmap calling for remote memory, keeping cacheable
+		//remote memory region: 0x8000_0000 - 0xBFFF_FFFF
+		if ( (pfn >= 0x80000) && (pfn <= 0xBFFFF) )
+			return vma_prot;
+		else
+			return pgprot_noncached(vma_prot);
+	}
 	else if (file->f_flags & O_SYNC)
 		return pgprot_writecombine(vma_prot);
 	return vma_prot;
