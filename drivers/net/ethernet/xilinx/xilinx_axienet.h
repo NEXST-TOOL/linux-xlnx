@@ -363,6 +363,38 @@
 #endif
 #endif
 
+/* XXV MAC Register Definitions */
+#define XXV_TC_OFFSET		 0x0000000C
+#define XXV_RCW1_OFFSET		 0x00000014
+#define XXV_JUM_OFFSET		 0x00000018
+#define XXV_TICKREG_OFFSET	 0x00000020
+#define XXV_STATRX_BLKLCK_OFFSET 0x0000040C
+
+/* XXV MAC Statistics Counters Definitions */
+#define XXV_STAT_CYC_LSB	0x00000500
+#define XXV_STAT_CYC_MSB	0x00000504
+#define XXV_STAT_RX_FRMERR_LSB	0x00000648
+#define XXV_STAT_RX_FRMERR_MSB	0x0000064C
+#define XXV_STAT_RX_BADCODE_LSB 0x00000660
+#define XXV_STAT_RX_BADCODE_MSB 0x00000664
+#define XXV_STAT_TX_FRMERR_LSB  0x000006A0
+#define XXV_STAT_TX_FRMERR_MSB  0x000006A4
+#define XXV_STAT_TX_BADFCS_LSB  0x000007B8
+#define XVV_STAT_TX_BADFCS_MSB	0x000007BC
+#define XXV_STAT_RXJABCNT_LSB	0x000008B8
+#define XXV_STAT_RXJABCNT_MSB	0x000008BC
+#define XXV_STAT_RX_BADFCS_LSB	0x000008C0
+#define XXV_STAT_RX_BADFCS_MSB	0x000008C4
+
+#define XXV_TC_TX_MASK		BIT(0)
+#define XXV_RCW1_RX_MASK	BIT(0)
+#define XXV_RCW1_FCS_MASK	BIT(1)
+#define XXV_TC_FCS_MASK		BIT(1)
+#define XXV_MIN_JUM_MASK	GENMASK(7, 0)
+#define XXV_MAX_JUM_MASK	GENMASK(10, 8)
+#define XXV_RX_BLKLCK_MASK	BIT(0)
+#define XXV_TICKREG_STATEN_MASK BIT(0)
+
 /**
  * struct axidma_bd - Axi Dma buffer descriptor layout
  * @next:         MM2S/S2MM Next Descriptor Pointer
@@ -387,9 +419,9 @@
  */
 struct axidma_bd {
 	u32 next;	/* Physical address of next buffer descriptor */
-	u32 reserved1;
+	u32 next_high;
 	u32 phys;
-	u32 reserved2;
+	u32 phys_high;
 	u32 reserved3;
 	u32 reserved4;
 	u32 cntrl;
@@ -501,9 +533,11 @@ struct axienet_local {
 	u32 coalesce_count_rx;
 	u32 coalesce_count_tx;
 	u32 is_10Gmac;
+	u32 is_xxvmac;
 	u32 phy_interface;
 	u32 phy_flags;
 	bool eth_hasnobuf;
+	struct net_device_stats stats; /* Statistics for this device */
 
 #ifdef CONFIG_XILINX_AXI_EMAC_HWTSTAMP
 	void __iomem *tx_ts_regs;
@@ -523,6 +557,11 @@ struct axienet_option {
 	u32 m_or;
 };
 
+struct xxvenet_option {
+	u32 opt;
+	u32 reg;
+	u32 m_or;
+};
 /**
  * axienet_ior - Memory mapped Axi Ethernet register read
  * @lp:         Pointer to axienet local structure

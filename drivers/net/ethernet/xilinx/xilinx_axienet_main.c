@@ -61,6 +61,8 @@ static const struct of_device_id axienet_of_match[] = {
 	{ .compatible = "xlnx,axi-ethernet-1.01.a", },
 	{ .compatible = "xlnx,axi-ethernet-2.01.a", },
 	{ .compatible = "xlnx,ten-gig-eth-mac", },
+	{ .compatible = "xlnx,xxv-ethernet-1.0", },
+	{ .compatible = "xlnx,xxv-ethernet-2.0", },
 	{},
 };
 
@@ -117,6 +119,28 @@ static struct axienet_option axienet_options[] = {
 		.opt = XAE_OPTION_RXEN,
 		.reg = XAE_RCW1_OFFSET,
 		.m_or = XAE_RCW1_RX_MASK,
+	},
+	{}
+};
+
+/* Option table for setting up Axi Ethernet hardware options */
+static struct xxvenet_option xxvenet_options[] = {
+	{ /* Turn on FCS stripping on receive packets */
+		.opt = XAE_OPTION_FCS_STRIP,
+		.reg = XXV_RCW1_OFFSET,
+		.m_or = XXV_RCW1_FCS_MASK,
+	}, { /* Turn on FCS insertion on transmit packets */
+		.opt = XAE_OPTION_FCS_INSERT,
+		.reg = XXV_TC_OFFSET,
+		.m_or = XXV_TC_FCS_MASK,
+	}, { /* Enable transmitter */
+		.opt = XAE_OPTION_TXEN,
+		.reg = XXV_TC_OFFSET,
+		.m_or = XXV_TC_TX_MASK,
+	}, { /* Enable receiver */
+		.opt = XAE_OPTION_RXEN,
+		.reg = XXV_RCW1_OFFSET,
+		.m_or = XXV_RCW1_RX_MASK,
 	},
 	{}
 };
@@ -181,9 +205,13 @@ static void axienet_dma_bd_release(struct net_device *ndev)
 {
 	int i;
 	struct axienet_local *lp = netdev_priv(ndev);
+	dma_addr_t buf_phys;
 
 	for (i = 0; i < RX_BD_NUM; i++) {
-		dma_unmap_single(ndev->dev.parent, lp->rx_bd_v[i].phys,
+		buf_phys = (u64)(lp->rx_bd_v[i].phys);
+		buf_phys += ( ((u64)lp->rx_bd_v[i].phys_high) << 32 );
+
+		dma_unmap_single(ndev->dev.parent, buf_phys,
 				 lp->max_frm_size, DMA_FROM_DEVICE);
 		dev_kfree_skb((struct sk_buff *)
 			      (lp->rx_bd_v[i].sw_id_offset));
@@ -219,6 +247,7 @@ static int axienet_dma_bd_init(struct net_device *ndev)
 	int i;
 	struct sk_buff *skb;
 	struct axienet_local *lp = netdev_priv(ndev);
+	dma_addr_t bd_next, bd_phys;
 
 	/* Reset the indexes which are used for accessing the BDs */
 	lp->tx_bd_ci = 0;
@@ -239,15 +268,19 @@ static int axienet_dma_bd_init(struct net_device *ndev)
 		goto out;
 
 	for (i = 0; i < TX_BD_NUM; i++) {
-		lp->tx_bd_v[i].next = lp->tx_bd_p +
+		bd_next = lp->tx_bd_p +
 				      sizeof(*lp->tx_bd_v) *
 				      ((i + 1) % TX_BD_NUM);
+		lp->tx_bd_v[i].next = (u32)(bd_next & 0x00000000FFFFFFFF);
+		lp->tx_bd_v[i].next_high = (u32)((bd_next >> 32) & 0x00000000FFFFFFFF);
 	}
 
 	for (i = 0; i < RX_BD_NUM; i++) {
-		lp->rx_bd_v[i].next = lp->rx_bd_p +
+		bd_next = lp->rx_bd_p +
 				      sizeof(*lp->rx_bd_v) *
 				      ((i + 1) % RX_BD_NUM);
+		lp->rx_bd_v[i].next = (u32)(bd_next & 0x00000000FFFFFFFF);
+		lp->rx_bd_v[i].next_high = (u32)((bd_next >> 32) & 0x00000000FFFFFFFF);
 
 		skb = netdev_alloc_skb(ndev, lp->max_frm_size);
 		if (!skb)
@@ -259,10 +292,14 @@ static int axienet_dma_bd_init(struct net_device *ndev)
 		wmb();
 
 		lp->rx_bd_v[i].sw_id_offset = (phys_addr_t) skb;
-		lp->rx_bd_v[i].phys = dma_map_single(ndev->dev.parent,
+		bd_phys = dma_map_single(ndev->dev.parent,
 						     skb->data,
 						     lp->max_frm_size,
 						     DMA_FROM_DEVICE);
+
+		lp->rx_bd_v[i].phys = (u32)(bd_phys & 0x00000000FFFFFFFF);
+		lp->rx_bd_v[i].phys_high = (u32)((bd_phys >> 32) & 0x00000000FFFFFFFF);
+
 		lp->rx_bd_v[i].cntrl = lp->max_frm_size;
 	}
 
@@ -334,7 +371,7 @@ static void axienet_set_mac_address(struct net_device *ndev, void *address)
 	if (!is_valid_ether_addr(ndev->dev_addr))
 		eth_random_addr(ndev->dev_addr);
 
-	if (lp->is_10Gmac)
+	if (lp->is_10Gmac || lp->is_xxvmac)
 		return;
 
 	/* Set up unicast MAC address filter set its mac address */
@@ -386,7 +423,7 @@ static void axienet_set_multicast_list(struct net_device *ndev)
 	u32 reg, af0reg, af1reg;
 	struct axienet_local *lp = netdev_priv(ndev);
 
-	if (lp->is_10Gmac || lp->eth_hasnobuf)
+	if (lp->is_10Gmac || lp->eth_hasnobuf || lp->is_xxvmac)
 		return;
 
 	if (ndev->flags & (IFF_ALLMULTI | IFF_PROMISC) ||
@@ -471,7 +508,25 @@ static void axienet_setoptions(struct net_device *ndev, u32 options)
 	lp->options |= options;
 }
 
-static void __axienet_device_reset(struct axienet_local *lp, off_t offset)
+static void xxvenet_setoptions(struct net_device *ndev, u32 options)
+{
+	int reg;
+	struct axienet_local *lp = netdev_priv(ndev);
+	struct xxvenet_option *tp = &xxvenet_options[0];
+
+	while (tp->opt) {
+		reg = ((axienet_ior(lp, tp->reg)) & ~(tp->m_or));
+		if (options & tp->opt)
+			reg |= tp->m_or;
+		axienet_iow(lp, tp->reg, reg);
+		tp++;
+	}
+
+	lp->options |= options;
+}
+
+static void __axienet_device_reset(struct axienet_local *lp,
+				   struct device *dev, off_t offset)
 {
 	u32 timeout;
 	/* Reset Axi DMA. This would reset Axi Ethernet core as well. The reset
@@ -498,7 +553,7 @@ static void __axienet_device_reset(struct axienet_local *lp, off_t offset)
  * This function is called to reset and initialize the Axi Ethernet core. This
  * is typically called during initialization. It does a reset of the Axi DMA
  * Rx/Tx channels and initializes the Axi DMA BDs. Since Axi DMA reset lines
- * areconnected to Axi Ethernet reset lines, this in turn resets the Axi
+ * are connected to Axi Ethernet reset lines, this in turn resets the Axi
  * Ethernet core. No separate hardware reset is done for the Axi Ethernet
  * core.
  */
@@ -506,20 +561,23 @@ static void axienet_device_reset(struct net_device *ndev)
 {
 	u32 axienet_status;
 	struct axienet_local *lp = netdev_priv(ndev);
+	u32 timeout = DELAY_OF_ONE_MILLISEC;
+	u32 err = 0, val;
 
-	__axienet_device_reset(lp, XAXIDMA_TX_CR_OFFSET);
-	__axienet_device_reset(lp, XAXIDMA_RX_CR_OFFSET);
+	__axienet_device_reset(lp, &ndev->dev, XAXIDMA_TX_CR_OFFSET);
+	__axienet_device_reset(lp, &ndev->dev, XAXIDMA_RX_CR_OFFSET);
 
 	lp->max_frm_size = XAE_MAX_VLAN_FRAME_SIZE;
-	lp->options |= XAE_OPTION_VLAN;
-	lp->options &= (~XAE_OPTION_JUMBO);
+	if (!lp->is_xxvmac) {
+		lp->options |= XAE_OPTION_VLAN;
+		lp->options &= (~XAE_OPTION_JUMBO);
+	}
 
 	if ((ndev->mtu > XAE_MTU) &&
 		(ndev->mtu <= XAE_JUMBO_MTU)) {
 		lp->max_frm_size = ndev->mtu + VLAN_ETH_HLEN +
 					XAE_TRL_SIZE;
-
-		if (lp->max_frm_size <= lp->rxmem)
+		if (lp->max_frm_size <= lp->rxmem && !lp->is_xxvmac)
 			lp->options |= XAE_OPTION_JUMBO;
 	}
 
@@ -528,11 +586,27 @@ static void axienet_device_reset(struct net_device *ndev)
 			   __func__);
 	}
 
-	axienet_status = axienet_ior(lp, XAE_RCW1_OFFSET);
-	axienet_status &= ~XAE_RCW1_RX_MASK;
-	axienet_iow(lp, XAE_RCW1_OFFSET, axienet_status);
+	if (!lp->is_xxvmac) {
+		axienet_status = axienet_ior(lp, XAE_RCW1_OFFSET);
+		axienet_status &= ~XAE_RCW1_RX_MASK;
+		axienet_iow(lp, XAE_RCW1_OFFSET, axienet_status);
+	}
 
-	if (!lp->is_10Gmac && !lp->eth_hasnobuf) {
+	if (lp->is_xxvmac) {
+		/* Check for block lock bit got set or not
+		 * This ensures that 10G ethernet IP
+		 * is functioning normally or not.
+		 */
+		err = readl_poll_timeout(lp->regs + XXV_STATRX_BLKLCK_OFFSET,
+					 val, (val & XXV_RX_BLKLCK_MASK),
+					 10, DELAY_OF_ONE_MILLISEC);
+		if (err)
+			netdev_err(ndev, "%s: Block lock of XXV MAC didn't get"
+					 "Set cross check the ref clock"
+					 "configuration", __func__);
+	}
+
+	if (!lp->is_10Gmac && !lp->eth_hasnobuf && !lp->is_xxvmac) {
 		axienet_status = axienet_ior(lp, XAE_IP_OFFSET);
 		if (axienet_status & XAE_INT_RXRJECT_MASK)
 			axienet_iow(lp, XAE_IS_OFFSET, XAE_INT_RXRJECT_MASK);
@@ -541,16 +615,28 @@ static void axienet_device_reset(struct net_device *ndev)
 		axienet_iow(lp, XAE_IE_OFFSET, XAE_INT_RECV_ERROR_MASK);
 	}
 
-	axienet_iow(lp, XAE_FCC_OFFSET, XAE_FCC_FCRX_MASK);
+	if (lp->is_xxvmac) {
+		lp->options |= XAE_OPTION_FCS_STRIP;
+		lp->options |= XAE_OPTION_FCS_INSERT;
+		xxvenet_setoptions(ndev, lp->options &
+				   ~(XAE_OPTION_TXEN | XAE_OPTION_RXEN));
 
-	/* Sync default options with HW but leave receiver and
-	 * transmitter disabled.
-	 */
-	axienet_setoptions(ndev, lp->options &
-			   ~(XAE_OPTION_TXEN | XAE_OPTION_RXEN));
+	} else {
+		axienet_iow(lp, XAE_FCC_OFFSET, XAE_FCC_FCRX_MASK);
+
+		/* Sync default options with HW but leave receiver and
+		 * transmitter disabled.
+		 */
+		axienet_setoptions(ndev, lp->options &
+				   ~(XAE_OPTION_TXEN | XAE_OPTION_RXEN));
+	}
+
 	axienet_set_mac_address(ndev, NULL);
 	axienet_set_multicast_list(ndev);
-	axienet_setoptions(ndev, lp->options);
+	if (lp->is_xxvmac)
+		xxvenet_setoptions(ndev, lp->options);
+	else
+		axienet_setoptions(ndev, lp->options);
 
 	ndev->trans_start = jiffies;
 }
@@ -685,6 +771,8 @@ static void axienet_start_xmit_done(struct net_device *ndev)
 	struct axidma_bd *cur_p;
 	unsigned int status = 0;
 
+	dma_addr_t tx_buf_phys;
+
 	cur_p = &lp->tx_bd_v[lp->tx_bd_ci];
 	status = cur_p->status;
 	while (status & XAXIDMA_BD_STS_COMPLETE_MASK) {
@@ -692,13 +780,17 @@ static void axienet_start_xmit_done(struct net_device *ndev)
 		if (cur_p->ptp_tx_skb)
 			axienet_tx_hwtstamp(lp, cur_p);
 #endif
+
+		tx_buf_phys = (u64)cur_p->phys;
+		tx_buf_phys += (((u64)cur_p->phys_high) << 32);
+
 		if (cur_p->tx_desc_mapping == DESC_DMA_MAP_PAGE)
-			dma_unmap_page(ndev->dev.parent, cur_p->phys,
+			dma_unmap_page(ndev->dev.parent, tx_buf_phys,
 				       cur_p->cntrl &
 				       XAXIDMA_BD_CTRL_LENGTH_MASK,
 				       DMA_TO_DEVICE);
 		else
-			dma_unmap_single(ndev->dev.parent, cur_p->phys,
+			dma_unmap_single(ndev->dev.parent, tx_buf_phys,
 					 cur_p->cntrl &
 					 XAXIDMA_BD_CTRL_LENGTH_MASK,
 					 DMA_TO_DEVICE);
@@ -721,8 +813,8 @@ static void axienet_start_xmit_done(struct net_device *ndev)
 		status = cur_p->status;
 	}
 
-	ndev->stats.tx_packets += packets;
-	ndev->stats.tx_bytes += size;
+	lp->stats.tx_packets += packets;
+	lp->stats.tx_bytes += size;
 	netif_wake_queue(ndev);
 }
 
@@ -809,6 +901,9 @@ static int axienet_start_xmit(struct sk_buff *skb, struct net_device *ndev)
 	struct axienet_local *lp = netdev_priv(ndev);
 	struct axidma_bd *cur_p;
 	unsigned long flags;
+	u32 tmp = 0;
+	
+	dma_addr_t tx_buf_phys;
 
 	num_frag = skb_shinfo(skb)->nr_frags;
 	cur_p = &lp->tx_bd_v[lp->tx_bd_tail];
@@ -865,8 +960,18 @@ static int axienet_start_xmit(struct sk_buff *skb, struct net_device *ndev)
 		}
 	}
 #endif
+	/* Work around for XXV MAC as MAC will drop the packets
+	 * of size less than 64 bytes we need to append data
+	 * to make packet length greater than or equal to 64
+	 */
+	if (skb->len < 64 && lp->is_xxvmac) {
+		tmp = 64 - skb->len;
+		//printk(KERN_ERR, "tmp : 0x%x\n", tmp);
+	}
+		
+
 	if (skb->ip_summed == CHECKSUM_PARTIAL && !lp->is_10Gmac &&
-		!lp->eth_hasnobuf) {
+		!lp->eth_hasnobuf && !lp->is_xxvmac) {
 		if (lp->features & XAE_FEATURE_FULL_TX_CSUM) {
 			/* Tx Full Checksum Offload Enabled */
 			cur_p->app0 |= 2;
@@ -878,13 +983,17 @@ static int axienet_start_xmit(struct sk_buff *skb, struct net_device *ndev)
 			cur_p->app1 = (csum_start_off << 16) | csum_index_off;
 		}
 	} else if (skb->ip_summed == CHECKSUM_UNNECESSARY && !lp->is_10Gmac &&
-		!lp->eth_hasnobuf) {
+		!lp->eth_hasnobuf && !lp->is_xxvmac) {
 		cur_p->app0 |= 2; /* Tx Full Checksum Offload Enabled */
 	}
 
-	cur_p->cntrl = skb_headlen(skb) | XAXIDMA_BD_CTRL_TXSOF_MASK;
-	cur_p->phys = dma_map_single(ndev->dev.parent, skb->data,
+	cur_p->cntrl = (skb_headlen(skb) | XAXIDMA_BD_CTRL_TXSOF_MASK) + tmp;
+	tx_buf_phys = dma_map_single(ndev->dev.parent, skb->data,
 				     skb_headlen(skb), DMA_TO_DEVICE);
+
+	cur_p->phys = (u32)(tx_buf_phys & (0x00000000FFFFFFFF)); 
+	cur_p->phys_high = (u32)((tx_buf_phys >> 32) & (0x00000000FFFFFFFF)); 
+
 	cur_p->tx_desc_mapping = DESC_DMA_MAP_SINGLE;
 
 	for (ii = 0; ii < num_frag; ii++) {
@@ -896,9 +1005,13 @@ static int axienet_start_xmit(struct sk_buff *skb, struct net_device *ndev)
 		cur_p = &lp->tx_bd_v[lp->tx_bd_tail];
 		frag = &skb_shinfo(skb)->frags[ii];
 		len = skb_frag_size(frag);
-		cur_p->phys = skb_frag_dma_map(ndev->dev.parent, frag, 0, len,
+		tx_buf_phys = skb_frag_dma_map(ndev->dev.parent, frag, 0, len,
 					       DMA_TO_DEVICE);
-		cur_p->cntrl = len;
+
+		cur_p->phys = (u32)(tx_buf_phys & (0x00000000FFFFFFFF));
+		cur_p->phys_high = (u32)((tx_buf_phys >> 32) & (0x00000000FFFFFFFF)); 
+
+		cur_p->cntrl = len + tmp;
 		cur_p->tx_desc_mapping = DESC_DMA_MAP_PAGE;
 	}
 
@@ -937,6 +1050,9 @@ static int axienet_recv(struct net_device *ndev, int budget)
 	u32 size = 0;
 	u32 packets = 0;
 	dma_addr_t tail_p = 0;
+	dma_addr_t rx_buf_phys;
+	dma_addr_t buf_phys;
+
 	struct axienet_local *lp = netdev_priv(ndev);
 	struct sk_buff *skb, *new_skb;
 	struct axidma_bd *cur_p;
@@ -951,12 +1067,16 @@ static int axienet_recv(struct net_device *ndev, int budget)
 		tail_p = lp->rx_bd_p + sizeof(*lp->rx_bd_v) * lp->rx_bd_ci;
 		skb = (struct sk_buff *) (cur_p->sw_id_offset);
 
-		if (lp->is_10Gmac || lp->eth_hasnobuf)
+		if (lp->is_10Gmac || lp->eth_hasnobuf || lp->is_xxvmac) {
 			length = cur_p->status & XAXIDMA_BD_STS_ACTUAL_LEN_MASK;
-		else
+			//printk(KERN_ERR "length: %u\n", length);
+		} else
 			length = cur_p->app4 & 0x0000FFFF;
 
-		dma_unmap_single(ndev->dev.parent, cur_p->phys,
+		buf_phys = (u64)(cur_p->phys);
+		buf_phys += ( ((u64)(cur_p->phys_high)) << 32);
+
+		dma_unmap_single(ndev->dev.parent, buf_phys,
 				 lp->max_frm_size,
 				 DMA_FROM_DEVICE);
 
@@ -1024,9 +1144,13 @@ static int axienet_recv(struct net_device *ndev, int budget)
 		 */
 		wmb();
 
-		cur_p->phys = dma_map_single(ndev->dev.parent, new_skb->data,
+		rx_buf_phys = dma_map_single(ndev->dev.parent, new_skb->data,
 					     lp->max_frm_size,
 					     DMA_FROM_DEVICE);
+
+		cur_p->phys = (u32)(rx_buf_phys & 0x00000000FFFFFFFF); 
+		cur_p->phys_high = (u32)((rx_buf_phys >> 32) & 0x00000000FFFFFFFF); 
+
 		cur_p->cntrl = lp->max_frm_size;
 		cur_p->status = 0;
 		cur_p->sw_id_offset = (phys_addr_t) new_skb;
@@ -1040,8 +1164,8 @@ static int axienet_recv(struct net_device *ndev, int budget)
 		numbdfree++;
 	}
 
-	ndev->stats.rx_packets += packets;
-	ndev->stats.rx_bytes += size;
+	lp->stats.rx_packets += packets;
+	lp->stats.rx_bytes += size;
 
 	if (tail_p)
 		axienet_dma_bdout(lp, XAXIDMA_RX_TDESC_OFFSET, tail_p);
@@ -1108,7 +1232,7 @@ static irqreturn_t axienet_err_irq(int irq, void *_ndev)
 
 	status = axienet_ior(lp, XAE_IS_OFFSET);
 	if (status & XAE_INT_RXFIFOOVR_MASK) {
-		ndev->stats.rx_fifo_errors++;
+		lp->stats.rx_fifo_errors++;
 		axienet_iow(lp, XAE_IS_OFFSET, XAE_INT_RXFIFOOVR_MASK);
 	}
 
@@ -1241,25 +1365,29 @@ static int axienet_open(struct net_device *ndev)
 
 	dev_dbg(&ndev->dev, "axienet_open()\n");
 
-	mdio_mcreg = axienet_ior(lp, XAE_MDIO_MC_OFFSET);
-	ret = axienet_mdio_wait_until_ready(lp);
-	if (ret < 0)
-		return ret;
-	/* Disable the MDIO interface till Axi Ethernet Reset is completed.
-	 * When we do an Axi Ethernet reset, it resets the complete core
-	 * including the MDIO. If MDIO is not disabled when the reset
-	 * process is started, MDIO will be broken afterwards.
-	 */
-	axienet_iow(lp, XAE_MDIO_MC_OFFSET,
-		    (mdio_mcreg & (~XAE_MDIO_MC_MDIOEN_MASK)));
-	axienet_device_reset(ndev);
-	/* Enable the MDIO */
-	axienet_iow(lp, XAE_MDIO_MC_OFFSET, mdio_mcreg);
-	ret = axienet_mdio_wait_until_ready(lp);
-	if (ret < 0)
-		return ret;
+	if (!lp->is_xxvmac) {
+		mdio_mcreg = axienet_ior(lp, XAE_MDIO_MC_OFFSET);
+		ret = axienet_mdio_wait_until_ready(lp);
+		if (ret < 0)
+			return ret;
+		/* Disable the MDIO interface till Axi Ethernet Reset is completed.
+		 * When we do an Axi Ethernet reset, it resets the complete core
+		 * including the MDIO. If MDIO is not disabled when the reset
+		 * process is started, MDIO will be broken afterwards.
+		 */
+		axienet_iow(lp, XAE_MDIO_MC_OFFSET,
+			    (mdio_mcreg & (~XAE_MDIO_MC_MDIOEN_MASK)));
+		axienet_device_reset(ndev);
+		/* Enable the MDIO */
+		axienet_iow(lp, XAE_MDIO_MC_OFFSET, mdio_mcreg);
+		ret = axienet_mdio_wait_until_ready(lp);
+		if (ret < 0)
+			return ret;
+	} else {
+		axienet_device_reset(ndev);
+	}
 
-	if (lp->phy_node && !lp->is_10Gmac) {
+	if (lp->phy_node && !lp->is_10Gmac && !lp->is_xxvmac) {
 		lp->phy_dev = of_phy_connect(lp->ndev, lp->phy_node,
 					     axienet_adjust_link, lp->phy_flags,
 					     lp->phy_interface);
@@ -1291,13 +1419,15 @@ static int axienet_open(struct net_device *ndev)
 	if (ret)
 		goto err_rx_irq;
 
-	if (!lp->eth_hasnobuf && !lp->is_10Gmac) {
+	if (!lp->eth_hasnobuf && !lp->is_10Gmac && !lp->is_xxvmac) {
 		/* Enable interrupts for Axi Ethernet */
 		ret = request_irq(lp->eth_irq, axienet_err_irq, 0, ndev->name,
 				  ndev);
 		if (ret)
 			goto err_eth_irq;
 	}
+
+	netif_start_queue(ndev);
 
 	return 0;
 
@@ -1338,16 +1468,21 @@ static int axienet_stop(struct net_device *ndev)
 	cr = axienet_dma_in32(lp, XAXIDMA_TX_CR_OFFSET);
 	axienet_dma_out32(lp, XAXIDMA_TX_CR_OFFSET,
 			  cr & (~XAXIDMA_CR_RUNSTOP_MASK));
-	axienet_setoptions(ndev, lp->options &
+	if (lp->is_xxvmac)
+		xxvenet_setoptions(ndev, lp->options &
+			   ~(XAE_OPTION_TXEN | XAE_OPTION_RXEN));
+	else
+		axienet_setoptions(ndev, lp->options &
 			   ~(XAE_OPTION_TXEN | XAE_OPTION_RXEN));
 
+	netif_stop_queue(ndev);
 	napi_disable(&lp->napi);
 	tasklet_kill(&lp->dma_err_tasklet);
 
 	free_irq(lp->tx_irq, ndev);
 	free_irq(lp->rx_irq, ndev);
 
-	if (!lp->eth_hasnobuf && !lp->is_10Gmac)
+	if (!lp->eth_hasnobuf && !lp->is_10Gmac && !lp->is_xxvmac)
 		free_irq(lp->eth_irq, ndev);
 
 	if (lp->phy_dev)
@@ -1356,6 +1491,73 @@ static int axienet_stop(struct net_device *ndev)
 
 	axienet_dma_bd_release(ndev);
 	return 0;
+}
+
+/**
+ * axienet_update_stats - Update the statistic structure entries from
+ * the corresponding xxvmac hardware statistic registers
+ * @data: Used for axienet_local instance pointer
+ */
+static void axienet_update_stats(unsigned long data)
+{
+	struct axienet_local *lp = (struct axienet_local *)data;
+	struct net_device_stats *nstat = &lp->stats;
+	u32 cnt;
+
+	if (!lp->is_xxvmac)
+		return;
+
+	axienet_iow(lp, XXV_TICKREG_OFFSET, XXV_TICKREG_STATEN_MASK);
+
+	cnt = axienet_ior(lp, XXV_STAT_RXJABCNT_LSB);
+	nstat->rx_errors += cnt;
+	nstat->rx_length_errors += cnt;
+	cnt = axienet_ior(lp, XXV_STAT_RXJABCNT_MSB);
+	nstat->rx_errors += cnt;
+	nstat->rx_length_errors += cnt;
+
+	cnt = axienet_ior(lp, XXV_STAT_RX_BADFCS_LSB);
+	nstat->rx_errors += cnt;
+	nstat->rx_crc_errors += cnt;
+	cnt = axienet_ior(lp, XXV_STAT_RX_BADFCS_MSB);
+	nstat->rx_errors += cnt;
+	nstat->rx_crc_errors += cnt;
+
+	cnt = axienet_ior(lp, XXV_STAT_RX_FRMERR_LSB);
+	nstat->rx_errors += cnt;
+	nstat->rx_length_errors += cnt;
+	cnt = axienet_ior(lp, XXV_STAT_RX_FRMERR_MSB);
+	nstat->rx_errors += cnt;
+	nstat->rx_length_errors += cnt;
+
+	cnt = axienet_ior(lp, XXV_STAT_TX_FRMERR_LSB);
+	nstat->tx_errors += cnt;
+	nstat->tx_fifo_errors += cnt;
+	cnt = axienet_ior(lp, XXV_STAT_TX_FRMERR_MSB);
+	nstat->tx_errors += cnt;
+	nstat->tx_fifo_errors += cnt;
+
+	cnt = axienet_ior(lp, XXV_STAT_TX_BADFCS_LSB);
+	nstat->tx_errors += cnt;
+	nstat->tx_fifo_errors += cnt;
+	cnt = axienet_ior(lp, XVV_STAT_TX_BADFCS_MSB);
+	nstat->tx_errors += cnt;
+	nstat->tx_fifo_errors += cnt;
+}
+
+/**
+ * axienet_get_stats - get device statistic raw data.
+ * @ndev: network device
+ * Return: Pointer to network device statistic
+ */
+static struct net_device_stats
+*axienet_get_stats(struct net_device *ndev)
+{
+	struct axienet_local *lp = netdev_priv(ndev);
+	struct net_device_stats *nstat = &lp->stats;
+
+	axienet_update_stats((unsigned long)lp);
+	return nstat;
 }
 
 /**
@@ -1546,6 +1748,7 @@ static const struct net_device_ops axienet_netdev_ops = {
 #ifdef CONFIG_NET_POLL_CONTROLLER
 	.ndo_poll_controller = axienet_poll_controller,
 #endif
+	.ndo_get_stats		= axienet_get_stats,
 };
 
 /**
@@ -1872,35 +2075,48 @@ static void axienet_dma_err_handler(unsigned long data)
 	struct axienet_local *lp = (struct axienet_local *) data;
 	struct net_device *ndev = lp->ndev;
 	struct axidma_bd *cur_p;
+	dma_addr_t phys_buf;
 
-	axienet_setoptions(ndev, lp->options &
-			   ~(XAE_OPTION_TXEN | XAE_OPTION_RXEN));
-	mdio_mcreg = axienet_ior(lp, XAE_MDIO_MC_OFFSET);
-	axienet_mdio_wait_until_ready(lp);
-	/* Disable the MDIO interface till Axi Ethernet Reset is completed.
-	 * When we do an Axi Ethernet reset, it resets the complete core
-	 * including the MDIO. So if MDIO is not disabled when the reset
-	 * process is started, MDIO will be broken afterwards.
-	 */
-	axienet_iow(lp, XAE_MDIO_MC_OFFSET, (mdio_mcreg &
-		    ~XAE_MDIO_MC_MDIOEN_MASK));
+	if (lp->is_xxvmac) {
+		xxvenet_setoptions(ndev, lp->options &
+				   ~(XAE_OPTION_TXEN | XAE_OPTION_RXEN));
+	} else {
+		axienet_setoptions(ndev, lp->options &
+				   ~(XAE_OPTION_TXEN | XAE_OPTION_RXEN));
+		mdio_mcreg = axienet_ior(lp, XAE_MDIO_MC_OFFSET);
+		axienet_mdio_wait_until_ready(lp);
+		/* Disable the MDIO interface till Axi Ethernet Reset is completed.
+		 * When we do an Axi Ethernet reset, it resets the complete core
+		 * including the MDIO. So if MDIO is not disabled when the reset
+		 * process is started, MDIO will be broken afterwards.
+		 */
+		axienet_iow(lp, XAE_MDIO_MC_OFFSET, (mdio_mcreg &
+			    ~XAE_MDIO_MC_MDIOEN_MASK));
+	}
 
-	__axienet_device_reset(lp, XAXIDMA_TX_CR_OFFSET);
-	__axienet_device_reset(lp, XAXIDMA_RX_CR_OFFSET);
+	__axienet_device_reset(lp, &ndev->dev, XAXIDMA_TX_CR_OFFSET);
+	__axienet_device_reset(lp, &ndev->dev, XAXIDMA_RX_CR_OFFSET);
 
-	axienet_iow(lp, XAE_MDIO_MC_OFFSET, mdio_mcreg);
-	axienet_mdio_wait_until_ready(lp);
+	if (!lp->is_xxvmac) {
+		axienet_iow(lp, XAE_MDIO_MC_OFFSET, mdio_mcreg);
+		axienet_mdio_wait_until_ready(lp);
+	}
 
 	for (i = 0; i < TX_BD_NUM; i++) {
 		cur_p = &lp->tx_bd_v[i];
-		if (cur_p->phys)
-			dma_unmap_single(ndev->dev.parent, cur_p->phys,
+		if (cur_p->phys || cur_p->phys_high) {
+			phys_buf = (u64)(cur_p->phys);
+			phys_buf += ( ((u64)(cur_p->phys_high)) << 32); 
+
+			dma_unmap_single(ndev->dev.parent, phys_buf,
 					 (cur_p->cntrl &
 					  XAXIDMA_BD_CTRL_LENGTH_MASK),
 					 DMA_TO_DEVICE);
+		}
 		if (cur_p->tx_skb)
 			dev_kfree_skb_irq((struct sk_buff *) cur_p->tx_skb);
 		cur_p->phys = 0;
+		cur_p->phys_high = 0;
 		cur_p->cntrl = 0;
 		cur_p->status = 0;
 		cur_p->app0 = 0;
@@ -1971,25 +2187,35 @@ static void axienet_dma_err_handler(unsigned long data)
 	axienet_dma_out32(lp, XAXIDMA_TX_CR_OFFSET,
 			  cr | XAXIDMA_CR_RUNSTOP_MASK);
 
-	axienet_status = axienet_ior(lp, XAE_RCW1_OFFSET);
-	axienet_status &= ~XAE_RCW1_RX_MASK;
-	axienet_iow(lp, XAE_RCW1_OFFSET, axienet_status);
+	if (!lp->is_xxvmac) {
+		axienet_status = axienet_ior(lp, XAE_RCW1_OFFSET);
+		axienet_status &= ~XAE_RCW1_RX_MASK;
+		axienet_iow(lp, XAE_RCW1_OFFSET, axienet_status);
+	}
 
-	if (!lp->is_10Gmac && !lp->eth_hasnobuf) {
+	if (!lp->is_10Gmac && !lp->eth_hasnobuf && !lp->is_xxvmac) {
 		axienet_status = axienet_ior(lp, XAE_IP_OFFSET);
 		if (axienet_status & XAE_INT_RXRJECT_MASK)
 			axienet_iow(lp, XAE_IS_OFFSET, XAE_INT_RXRJECT_MASK);
 	}
-	axienet_iow(lp, XAE_FCC_OFFSET, XAE_FCC_FCRX_MASK);
+	if (!lp->is_xxvmac) {
+		axienet_iow(lp, XAE_FCC_OFFSET, XAE_FCC_FCRX_MASK);
+		/* Sync default options with HW but leave receiver and
+		 * transmitter disabled.
+		 */
+		axienet_setoptions(ndev, lp->options &
+				   ~(XAE_OPTION_TXEN | XAE_OPTION_RXEN));
+	} else {
+		xxvenet_setoptions(ndev, lp->options &
+				   ~(XAE_OPTION_TXEN | XAE_OPTION_RXEN));
 
-	/* Sync default options with HW but leave receiver and
-	 * transmitter disabled.
-	 */
-	axienet_setoptions(ndev, lp->options &
-			   ~(XAE_OPTION_TXEN | XAE_OPTION_RXEN));
+	}
 	axienet_set_mac_address(ndev, NULL);
 	axienet_set_multicast_list(ndev);
-	axienet_setoptions(ndev, lp->options);
+	if (lp->is_xxvmac)
+		xxvenet_setoptions(ndev, lp->options);
+	else
+		axienet_setoptions(ndev, lp->options);
 }
 
 /**
@@ -2099,6 +2325,10 @@ static int axienet_probe(struct platform_device *pdev)
 	of_property_read_u32(pdev->dev.of_node, "xlnx,phy-type", &lp->phy_type);
 	if (of_device_is_compatible(pdev->dev.of_node, "xlnx,ten-gig-eth-mac"))
 		lp->is_10Gmac = 1;
+	if (of_device_is_compatible(pdev->dev.of_node, "xlnx,xxv-ethernet-2.0"))
+		lp->is_xxvmac = 1;
+	else if (of_device_is_compatible(pdev->dev.of_node, "xlnx,xxv-ethernet-1.0"))
+		lp->is_xxvmac = 1;
 
 	lp->eth_hasnobuf = of_property_read_bool(pdev->dev.of_node,
 						 "xlnx,eth-hasnobuf");
@@ -2151,6 +2381,7 @@ static int axienet_probe(struct platform_device *pdev)
 	}
 	lp->rx_irq = irq_of_parse_and_map(np, 1);
 	lp->tx_irq = irq_of_parse_and_map(np, 0);
+	printk(KERN_ERR "Rx irq #%d, Tx irq #%d\n", lp->rx_irq, lp->tx_irq);
 	of_node_put(np);
 	if ((lp->rx_irq <= 0) || (lp->tx_irq <= 0)) {
 		dev_err(&pdev->dev, "could not determine irqs\n");
@@ -2175,7 +2406,8 @@ static int axienet_probe(struct platform_device *pdev)
 
 	ret = of_get_phy_mode(pdev->dev.of_node);
 	if (ret < 0)
-		dev_warn(&pdev->dev, "couldn't find phy i/f\n");
+		//dev_warn(&pdev->dev, "couldn't find phy i/f\n");
+		printk(KERN_ERR "couldn't find phy i/f\n");
 	lp->phy_interface = ret;
 	if (lp->phy_type == XAE_PHY_TYPE_1000BASE_X)
 		lp->phy_flags = XAE_PHY_TYPE_1000BASE_X;
@@ -2186,6 +2418,9 @@ static int axienet_probe(struct platform_device *pdev)
 		if (ret)
 			dev_warn(&pdev->dev, "error registering MDIO bus\n");
 	}
+    else
+		printk(KERN_ERR "no phy-handle node in devicetree\n");
+
 
 	netif_napi_add(ndev, &lp->napi, xaxienet_rx_poll, XAXIENET_NAPI_WEIGHT);
 
