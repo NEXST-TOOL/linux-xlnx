@@ -1621,8 +1621,13 @@ static int sdhci_check_ro(struct sdhci_host *host)
 	else if (host->ops->get_ro)
 		is_readonly = host->ops->get_ro(host);
 	else
+	{
 		is_readonly = !(sdhci_readl(host, SDHCI_PRESENT_STATE)
 				& SDHCI_WRITE_PROTECT);
+		printk("clear readonly tag for Fidus board\n");
+		
+		is_readonly = 0;
+	}
 
 	spin_unlock_irqrestore(&host->lock, flags);
 
