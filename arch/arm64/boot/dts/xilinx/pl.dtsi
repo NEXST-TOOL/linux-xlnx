@@ -11,7 +11,7 @@
 		#size-cells = <2>;
 		compatible = "simple-bus";
 		ranges ;
-		axi_pcie3_0: axi-pcie@a0000000 {
+		axi_pcie3_0: axi-pcie@80000000 {
 			#address-cells = <3>;
 			#interrupt-cells = <1>;
 			#size-cells = <2>;
@@ -24,13 +24,90 @@
 			interrupt-map-mask = <0 0 0 7>;
 			interrupt-parent = <&gic>;
 			interrupts = <0 89 4>;
-			ranges = <0x02000000 0x00000000 0xB0000000 0x0 0xB0000000 0x00000000 0x8000000>;
-			reg = <0x0 0xa0000000 0x0 0x200000>;
+			ranges = <0x02000000 0x00000000 0xA0000000 0x0 0xA0000000 0x00000000 0x8000000>;
+			reg = <0x0 0x80000000 0x0 0x200000>;
 			pcie_intc1:legacy-interrupt {
 				#address-cells = <0>;
 				#interrupt-cells = <1>;
 				interrupt-controller ;
 			};
+		};
+		axi_dma_hier_axi_eth_0_dma: dma@82000000 {
+			#dma-cells = <1>;
+			clock-names = "s_axi_lite_aclk", "m_axi_sg_aclk", "m_axi_mm2s_aclk", "m_axi_s2mm_aclk";
+			clocks = <&misc_clk_0>, <&misc_clk_0>, <&misc_clk_0>, <&misc_clk_0>;
+			compatible = "xlnx,axi-dma-1.00.a";
+			interrupt-parent = <&gic>;
+			interrupts = <0 91 4 0 90 4>;
+			reg = <0x0 0x82000000 0x0 0x10000>;
+			xlnx,addrwidth = <0x28>;
+			xlnx,include-sg ;
+			dma-channel@82000000 {
+				compatible = "xlnx,axi-dma-mm2s-channel";
+				dma-channels = <0x1>;
+				interrupts = <0 91 4>;
+				xlnx,datawidth = <0x40>;
+				xlnx,device-id = <0x0>;
+				xlnx,include-dre ;
+			};
+			dma-channel@82000030 {
+				compatible = "xlnx,axi-dma-s2mm-channel";
+				dma-channels = <0x1>;
+				interrupts = <0 90 4>;
+				xlnx,datawidth = <0x40>;
+				xlnx,device-id = <0x0>;
+				xlnx,include-dre ;
+			};
+		};
+		xxv_ethernet_0: xxv_ethernet@82020000 {
+			axistream-connected = <&axi_dma_hier_axi_eth_0_dma>;
+                        axistream-control-connected = <&axi_dma_hier_axi_eth_0_dma>;
+                        clock-frequency = <100000000>;
+			compatible = "xlnx,xxv-ethernet-2.0";
+			local-mac-address = [00 0a 35 00 00 00];
+                        device_type = "network";
+			reg = <0x0 0x82020000 0x0 0x10000>;
+			xlnx,rxmem = <0x8000>;
+			xlnx,add-gt-cntrl-sts-ports = <0x0>;
+			xlnx,anlt-clk-in-mhz = <0x4b>;
+			xlnx,base-r-kr = "BASE-R";
+			xlnx,clocking = "Asynchronous";
+			xlnx,core = "Ethernet MAC+PCS/PMA";
+			xlnx,data-path-interface = "AXI Stream";
+			xlnx,enable-pipeline-reg = <0x0>;
+			xlnx,enable-rx-flow-control-logic = <0x0>;
+			xlnx,enable-time-stamping = <0x0>;
+			xlnx,enable-tx-flow-control-logic = <0x0>;
+			xlnx,enable-vlane-adjust-mode = <0x0>;
+			xlnx,family-chk = "zynquplus";
+			xlnx,fast-sim-mode = <0x0>;
+			xlnx,gt-drp-clk = "100.00";
+			xlnx,gt-group-select = "Quad X0Y3";
+			xlnx,gt-location = <0x1>;
+			xlnx,gt-ref-clk-freq = "322.265625";
+			xlnx,gt-type = "GTY";
+			xlnx,include-auto-neg-lt-logic = "None";
+			xlnx,include-axi4-interface = <0x1>;
+			xlnx,include-fec-logic = <0x0>;
+			xlnx,include-rsfec-logic = <0x0>;
+			xlnx,include-shared-logic = <0x1>;
+			xlnx,include-user-fifo = <0x1>;
+			xlnx,lane1-gt-loc = "X0Y12";
+			xlnx,lane2-gt-loc = "NA";
+			xlnx,lane3-gt-loc = "NA";
+			xlnx,lane4-gt-loc = "NA";
+			xlnx,line-rate = <0xa>;
+			xlnx,num-of-cores = <0x1>;
+			xlnx,ptp-clocking-mode = <0x0>;
+			xlnx,ptp-operation-mode = <0x2>;
+			xlnx,runtime-switch = <0x0>;
+			xlnx,tx-latency-adjust = <0x0>;
+			xlnx,xgmii-interface = <0x1>;
+		};
+		misc_clk_0: misc_clk_0 {
+			#clock-cells = <0>;
+			clock-frequency = <125000000>;
+			compatible = "fixed-clock";
 		};
 	};
 };
