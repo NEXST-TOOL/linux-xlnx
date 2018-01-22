@@ -15,6 +15,7 @@
 
 #include "zynqmp.dtsi"
 #include "zynqmp-clk.dtsi"
+#include "pl.dtsi"
 #include <dt-bindings/gpio/gpio.h>
 #include <dt-bindings/phy/phy.h>
 
@@ -43,7 +44,7 @@
 
 	memory {
 		device_type = "memory";
-		reg = <0x0 0x0 0x0 0x80000000>, <0x8 0x00000000 0x0 0x80000000>;
+		reg = <0x0 0x0 0x0 0x80000000>, <0x8 0x00000000 0x3 0x80000000>;
 	};
 
 	gpio-keys {
