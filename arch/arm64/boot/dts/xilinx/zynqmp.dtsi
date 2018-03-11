@@ -264,11 +264,18 @@
 		method = "smc";
 	};
 
-	pmufw: firmware {
+	pmufw: zynqmp-firmware {
 		compatible = "xlnx,zynqmp-pm";
 		method = "smc";
 		interrupt-parent = <&gic>;
 		interrupts = <0 35 4>;
+	};
+	
+	optee: firmware {
+		optee {
+			compatible = "linaro,optee-tz";
+			method = "smc";
+		};
 	};
 
 	timer {
