@@ -12,24 +12,56 @@
 		compatible = "simple-bus";
 		ranges ;
 		axi_pcie3_0: axi-pcie@80000000 {
-			#address-cells = <3>;
-			#interrupt-cells = <1>;
-			#size-cells = <2>;
 			compatible = "xlnx,axi-pcie-host-1.00.a";
 			device_type = "pci";
-			interrupt-map = <0 0 0 1 &pcie_intc1 1>,
-					<0 0 0 2 &pcie_intc1 2>,
-					<0 0 0 3 &pcie_intc1 3>, 
-					<0 0 0 4 &pcie_intc1 4>;
-			interrupt-map-mask = <0 0 0 7>;
+			reg = <0x0 0x80000000 0x0 0x200000>,
+				<0x0 0x80200000 0x0 0x200000>;
+			reg-names = "rp0", "rp1";
+			#address-cells = <3>;
+			#size-cells = <2>;
+			interrupts = <0 89 4>,
+					   <0 90 4>;
 			interrupt-parent = <&gic>;
-			interrupts = <0 89 4>;
-			ranges = <0x02000000 0x00000000 0xA0000000 0x0 0xA0000000 0x00000000 0x8000000>;
-			reg = <0x0 0x80000000 0x0 0x200000>;
-			pcie_intc1:legacy-interrupt {
-				#address-cells = <0>;
+			ranges = <0x02000000 0x00000000 0xA0000000 0x0 0xA0000000 0x00000000 0x200000>;
+		
+			pcie0: pcie@0,0 {
+				device_type = "pci";
+				reg = <0x0000 0 0 0 0>;
+				#address-cells = <3>;
+				#size-cells = <2>;
 				#interrupt-cells = <1>;
-				interrupt-controller ;
+				ranges;
+				interrupt-map-mask = <0 0 0 7>;
+				interrupt-map = <0 0 0 1 &pcie_intc0 1>,
+					<0 0 0 2 &pcie_intc0 2>,
+					<0 0 0 3 &pcie_intc0 3>,
+					<0 0 0 4 &pcie_intc0 4>;
+
+				pcie_intc0: interrupt-controller {
+					interrupt-controller;
+					#address-cells = <0>;
+					#interrupt-cells = <1>;
+				};
+			};
+
+			pcie1: pcie@1,0 {
+				device_type = "pci";
+				reg = <0x0800 0 0 0 0>;
+				#address-cells = <3>;
+				#size-cells = <2>;
+				#interrupt-cells = <1>;
+				ranges;
+				interrupt-map-mask = <0 0 0 7>;
+				interrupt-map = <0 0 0 1 &pcie_intc1 1>,
+					<0 0 0 2 &pcie_intc1 2>,
+					<0 0 0 3 &pcie_intc1 3>,
+					<0 0 0 4 &pcie_intc1 4>;
+
+				pcie_intc1: interrupt-controller {
+					interrupt-controller;
+					#address-cells = <0>;
+					#interrupt-cells = <1>;
+				};
 			};
 		};
 		axi_dma_hier_axi_eth_0_dma: dma@82000000 {
@@ -38,7 +70,7 @@
 			clocks = <&misc_clk_0>, <&misc_clk_0>, <&misc_clk_0>, <&misc_clk_0>;
 			compatible = "xlnx,axi-dma-1.00.a";
 			interrupt-parent = <&gic>;
-			interrupts = <0 91 4 0 90 4>;
+			interrupts = <0 92 4 0 91 4>;
 			reg = <0x0 0x82000000 0x0 0x10000>;
 			xlnx,addrwidth = <0x28>;
 			xlnx,include-sg ;
