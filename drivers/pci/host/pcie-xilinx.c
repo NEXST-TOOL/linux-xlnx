@@ -201,7 +201,6 @@ static int xilinx_pcie_config_read(struct pci_bus *bus, unsigned int devfn,
 				int where, int size, u32 *val)
 {
 	struct xilinx_pcie_port *port;
-	int ret;
 
 	int relbus;
 
@@ -255,11 +254,11 @@ static int xilinx_pcie_config_write(struct pci_bus *bus, unsigned int devfn,
 	addr = port->reg_base + relbus + where;
 
 	if (size == 1)
-		writeb(addr, val);
+		writeb(val, addr);
 	else if (size == 2)
-		writew(addr, val);
+		writew(val, addr);
 	else
-		writel(addr, val);
+		writel(val, addr);
 
 	return PCIBIOS_SUCCESSFUL;
 }
@@ -704,8 +703,8 @@ static void xilinx_pcie_put_resources(struct xilinx_pcie *pcie)
  */
 static int xilinx_pcie_request_resources(struct xilinx_pcie *pcie)
 {
-	struct device *dev = pcie->dev;
-	int err;
+	//struct device *dev = pcie->dev;
+	//int err;
 
 	INIT_LIST_HEAD(&pcie->res);
 
@@ -940,7 +939,6 @@ static int xilinx_pcie_probe(struct platform_device *pdev)
 	struct device *dev = &pdev->dev;
 	struct xilinx_pcie *pcie;
 
-	struct pci_bus *bus;
 	int err;
 
 	/*check if Device Tree Node is available*/
