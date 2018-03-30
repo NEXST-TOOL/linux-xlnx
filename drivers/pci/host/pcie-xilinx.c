@@ -167,7 +167,7 @@ static void xilinx_pcie_clear_err_interrupts(struct xilinx_pcie_port *port)
 	unsigned long val = pcie_read(port, XILINX_PCIE_REG_RPEFR);
 
 	if (val & XILINX_PCIE_RPEFR_ERR_VALID) {
-		dev_dbg(port->dev, "Requester ID %lu\n",
+		dev_dbg(port->pcie->dev, "Requester ID %lu\n",
 			val & XILINX_PCIE_RPEFR_REQ_ID);
 		pcie_write(port, XILINX_PCIE_RPEFR_ALL_MASK,
 			   XILINX_PCIE_REG_RPEFR);
@@ -201,7 +201,6 @@ static int xilinx_pcie_config_read(struct pci_bus *bus, unsigned int devfn,
 				int where, int size, u32 *val)
 {
 	struct xilinx_pcie_port *port;
-	u32 bn = bus->number;
 	int ret;
 
 	int relbus;
@@ -223,10 +222,8 @@ static int xilinx_pcie_config_read(struct pci_bus *bus, unsigned int devfn,
 		*val = readb(addr);
 	else if (size == 2)
 		*val = readw(addr);
-	else if (size == 4)
-		*val = readl(addr);
 	else
-		*val = readq(addr);
+		*val = readl(addr);
 
 	return PCIBIOS_SUCCESSFUL;
 }
@@ -244,8 +241,6 @@ static int xilinx_pcie_config_write(struct pci_bus *bus, unsigned int devfn,
 				 int where, int size, u32 val)
 {
 	struct xilinx_pcie_port *port;
-	u32 bn = bus->number;
-
 	int relbus;
 
 	void __iomem* addr;
@@ -260,13 +255,11 @@ static int xilinx_pcie_config_write(struct pci_bus *bus, unsigned int devfn,
 	addr = port->reg_base + relbus + where;
 
 	if (size == 1)
-		*val = writeb(addr, val);
+		writeb(addr, val);
 	else if (size == 2)
-		*val = writew(addr, val);
-	else if (size == 4)
-		*val = writel(addr, val);
+		writew(addr, val);
 	else
-		*val = writeq(addr, val);
+		writel(addr, val);
 
 	return PCIBIOS_SUCCESSFUL;
 }
@@ -310,7 +303,7 @@ static void xilinx_msi_teardown_irq(struct msi_controller *chip,
 	struct pci_dev *pdev = to_pci_dev(chip->dev);
 	struct irq_data *d = irq_get_irq_data(irq);
 	irq_hw_number_t hwirq = irqd_to_hwirq(d);
-	struct mtk_pcie_port *port;
+	struct xilinx_pcie_port *port;
 
 	port = xilinx_pcie_find_port(pdev->bus, pdev->devfn);
 	if (!port)
@@ -337,7 +330,7 @@ static int xilinx_pcie_msi_setup_irq(struct msi_controller *chip,
 				     struct pci_dev *pdev,
 				     struct msi_desc *desc)
 {
-	struct xilinx_pcie *port;
+	struct xilinx_pcie_port *port;
 	unsigned int irq;
 	int hwirq;
 	struct msi_msg msg;
@@ -470,32 +463,32 @@ static irqreturn_t xilinx_pcie_intr_handler(int irq, void *data)
 		return IRQ_NONE;
 
 	if (status & XILINX_PCIE_INTR_LINK_DOWN)
-		dev_warn(port->dev, "Link Down\n");
+		dev_warn(port->pcie->dev, "Link Down\n");
 
 	if (status & XILINX_PCIE_INTR_ECRC_ERR)
-		dev_warn(port->dev, "ECRC failed\n");
+		dev_warn(port->pcie->dev, "ECRC failed\n");
 
 	if (status & XILINX_PCIE_INTR_STR_ERR)
-		dev_warn(port->dev, "Streaming error\n");
+		dev_warn(port->pcie->dev, "Streaming error\n");
 
 	if (status & XILINX_PCIE_INTR_HOT_RESET)
-		dev_info(port->dev, "Hot reset\n");
+		dev_info(port->pcie->dev, "Hot reset\n");
 
 	if (status & XILINX_PCIE_INTR_CFG_TIMEOUT)
-		dev_warn(port->dev, "ECAM access timeout\n");
+		dev_warn(port->pcie->dev, "ECAM access timeout\n");
 
 	if (status & XILINX_PCIE_INTR_CORRECTABLE) {
-		dev_warn(port->dev, "Correctable error message\n");
+		dev_warn(port->pcie->dev, "Correctable error message\n");
 		xilinx_pcie_clear_err_interrupts(port);
 	}
 
 	if (status & XILINX_PCIE_INTR_NONFATAL) {
-		dev_warn(port->dev, "Non fatal error message\n");
+		dev_warn(port->pcie->dev, "Non fatal error message\n");
 		xilinx_pcie_clear_err_interrupts(port);
 	}
 
 	if (status & XILINX_PCIE_INTR_FATAL) {
-		dev_warn(port->dev, "Fatal error message\n");
+		dev_warn(port->pcie->dev, "Fatal error message\n");
 		xilinx_pcie_clear_err_interrupts(port);
 	}
 
@@ -505,7 +498,7 @@ static irqreturn_t xilinx_pcie_intr_handler(int irq, void *data)
 
 		/* Check whether interrupt valid */
 		if (!(val & XILINX_PCIE_RPIFR1_INTR_VALID)) {
-			dev_warn(port->dev, "RP Intr FIFO1 read error\n");
+			dev_warn(port->pcie->dev, "RP Intr FIFO1 read error\n");
 			goto error;
 		}
 
@@ -527,7 +520,7 @@ static irqreturn_t xilinx_pcie_intr_handler(int irq, void *data)
 		val = pcie_read(port, XILINX_PCIE_REG_RPIFR1);
 
 		if (!(val & XILINX_PCIE_RPIFR1_INTR_VALID)) {
-			dev_warn(port->dev, "RP Intr FIFO1 read error\n");
+			dev_warn(port->pcie->dev, "RP Intr FIFO1 read error\n");
 			goto error;
 		}
 
@@ -547,31 +540,31 @@ static irqreturn_t xilinx_pcie_intr_handler(int irq, void *data)
 	}
 
 	if (status & XILINX_PCIE_INTR_SLV_UNSUPP)
-		dev_warn(port->dev, "Slave unsupported request\n");
+		dev_warn(port->pcie->dev, "Slave unsupported request\n");
 
 	if (status & XILINX_PCIE_INTR_SLV_UNEXP)
-		dev_warn(port->dev, "Slave unexpected completion\n");
+		dev_warn(port->pcie->dev, "Slave unexpected completion\n");
 
 	if (status & XILINX_PCIE_INTR_SLV_COMPL)
-		dev_warn(port->dev, "Slave completion timeout\n");
+		dev_warn(port->pcie->dev, "Slave completion timeout\n");
 
 	if (status & XILINX_PCIE_INTR_SLV_ERRP)
-		dev_warn(port->dev, "Slave Error Poison\n");
+		dev_warn(port->pcie->dev, "Slave Error Poison\n");
 
 	if (status & XILINX_PCIE_INTR_SLV_CMPABT)
-		dev_warn(port->dev, "Slave Completer Abort\n");
+		dev_warn(port->pcie->dev, "Slave Completer Abort\n");
 
 	if (status & XILINX_PCIE_INTR_SLV_ILLBUR)
-		dev_warn(port->dev, "Slave Illegal Burst\n");
+		dev_warn(port->pcie->dev, "Slave Illegal Burst\n");
 
 	if (status & XILINX_PCIE_INTR_MST_DECERR)
-		dev_warn(port->dev, "Master decode error\n");
+		dev_warn(port->pcie->dev, "Master decode error\n");
 
 	if (status & XILINX_PCIE_INTR_MST_SLVERR)
-		dev_warn(port->dev, "Master slave error\n");
+		dev_warn(port->pcie->dev, "Master slave error\n");
 
 	if (status & XILINX_PCIE_INTR_MST_ERRP)
-		dev_warn(port->dev, "Master error poison\n");
+		dev_warn(port->pcie->dev, "Master error poison\n");
 
 error:
 	/* Clear the Interrupt Decode register */
@@ -656,15 +649,6 @@ static int xilinx_pcie_init_irq_domain(struct xilinx_pcie_port *port,
 	return 0;
 }
 
-static void xilinx_pcie_put_resources(struct xilinx_pcie *pcie)
-{
-	struct xilinx_pcie_port *port, *tmp;
-
-	list_for_each_entry_safe(port, tmp, &pcie->ports, list) {
-		xilinx_pcie_port_free(port);
-	}
-}
-
 /**
  * xilinx_pcie_register - register tree-like PCIe bridges, buses and devices
  * @pcie: Xilinx PCIe structure
@@ -698,9 +682,18 @@ static void xilinx_pcie_port_free(struct xilinx_pcie_port *port)
 	struct xilinx_pcie *pcie = port->pcie;
 	struct device *dev = pcie->dev;
 
-	devm_iounmap(dev, port->base);
+	devm_iounmap(dev, port->reg_base);
 	list_del(&port->list);
 	devm_kfree(dev, port);
+}
+
+static void xilinx_pcie_put_resources(struct xilinx_pcie *pcie)
+{
+	struct xilinx_pcie_port *port, *tmp;
+
+	list_for_each_entry_safe(port, tmp, &pcie->ports, list) {
+		xilinx_pcie_port_free(port);
+	}
 }
 
 /**
@@ -720,9 +713,9 @@ static int xilinx_pcie_request_resources(struct xilinx_pcie *pcie)
 	pci_add_resource_offset(&pcie->res, &pcie->mem, pcie->offset.mem);
 	pci_add_resource(&pcie->res, &pcie->busn);
 
-	err = devm_request_pci_bus_resources(dev, &pcie->res);
+	/*err = devm_request_pci_bus_resources(dev, &pcie->res);
 	if (err < 0)
-		return err;
+		return err;*/
 
 	pci_remap_iospace(&pcie->pio, pcie->io.start);
 
@@ -737,12 +730,12 @@ static void xilinx_pcie_init_port(struct xilinx_pcie_port *port)
 {
 	if (!xilinx_pcie_link_is_up(port))
 	{
-		dev_info(port->dev, "PCIe Link is DOWN\n");
+		dev_info(port->pcie->dev, "PCIe Link is DOWN\n");
 		xilinx_pcie_port_free(port);
 		return;
 	}
 
-	dev_info(port->dev, "PCIe Link is UP\n");
+	dev_info(port->pcie->dev, "PCIe Link is UP\n");
 
 	/* Disable all interrupts */
 	pcie_write(port, ~XILINX_PCIE_IDR_ALL_MASK,
