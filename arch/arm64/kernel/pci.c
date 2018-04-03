@@ -54,7 +54,7 @@ int pcibios_enable_device(struct pci_dev *dev, int mask)
  */
 int pcibios_add_device(struct pci_dev *dev)
 {
-	dev->irq = of_irq_parse_and_map_pci(dev, 0, 0);
+	//dev->irq = of_irq_parse_and_map_pci(dev, 0, 0);
 
 	return 0;
 }
