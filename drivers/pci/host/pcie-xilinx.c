@@ -971,6 +971,8 @@ static int xilinx_pcie_probe(struct platform_device *pdev)
 	if (err)
 		goto put_resources;
 
+	return 0;
+
 put_resources:
 	if (!list_empty(&pcie->ports))
 		xilinx_pcie_put_resources(pcie);
