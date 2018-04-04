@@ -180,6 +180,20 @@ static struct xilinx_pcie_port *xilinx_pcie_find_port(struct pci_bus *bus,
 	struct xilinx_pcie *pcie = bus->sysdata;
 	struct xilinx_pcie_port *port;
 
+	struct pci_bus *parent_bus;
+	struct pci_dev *parent_bridge, *bridge = NULL;
+
+	//traverse PCI tree first to determine which root port this device locates on
+	parent_bridge = bus->self;
+	while (parent_bridge != NULL)
+	{
+		parent_bus = parent_bridge->bus;
+		bridge = parent_bridge;
+		parent_bridge = parent_bus->self;
+	}
+	//bridge equals to NULL means current bus is root bus
+	devfn = (bridge == NULL) ? devfn : (bridge->devfn);
+
 	list_for_each_entry(port, &pcie->ports, list)
 		if (port->slot == PCI_SLOT(devfn))
 			return port;
