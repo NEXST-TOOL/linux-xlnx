@@ -13,6 +13,7 @@ Required properties:
   - cell 2 contains the lower 32 address bits and is used to translate to the
     CPU address space
 - #size-cells: Size representation for root ports, set to <2>
+- #interrupt-cells: The value must be 1.
 - interrupts: Should contain AXI PCIe interrupt of each root port
 - ranges: ranges for the PCI memory regions (I/O space region is not
 	supported by hardware)
@@ -57,6 +58,7 @@ Zynq:
 		reg-names = "rp0", "rp1", "rp2";
 		#address-cells = <3>;
 		#size-cells = <2>;
+		#interrupt-cells = <1>;
 		interrupts = < 0 52 4 >,
 				     < 0 53 4 >,
 					 < 0 54 4 >;

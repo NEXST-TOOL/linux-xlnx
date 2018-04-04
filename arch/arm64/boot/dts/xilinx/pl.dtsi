@@ -19,6 +19,7 @@
 			reg-names = "rp0", "rp1";
 			#address-cells = <3>;
 			#size-cells = <2>;
+			#interrupt-cells = <1>;
 			interrupts = <0 89 4>,
 					   <0 90 4>;
 			interrupt-parent = <&gic>;
