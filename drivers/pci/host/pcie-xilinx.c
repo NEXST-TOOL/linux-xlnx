@@ -705,6 +705,7 @@ static void xilinx_pcie_put_resources(struct xilinx_pcie *pcie)
 	struct xilinx_pcie_port *port, *tmp;
 
 	list_for_each_entry_safe(port, tmp, &pcie->ports, list) {
+		xilinx_pcie_free_irq_domain(port);
 		xilinx_pcie_port_free(port);
 	}
 }
@@ -1002,9 +1003,10 @@ put_resources:
  */
 static int xilinx_pcie_remove(struct platform_device *pdev)
 {
-	struct xilinx_pcie_port *port = platform_get_drvdata(pdev);
+	struct xilinx_pcie *pcie = platform_get_drvdata(pdev);
 
-	xilinx_pcie_free_irq_domain(port);
+	if (!list_empty(&pcie->ports))
+		xilinx_pcie_put_resources(pcie);
 
 	return 0;
 }
