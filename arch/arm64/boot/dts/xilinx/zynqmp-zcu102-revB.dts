@@ -19,8 +19,8 @@
 
 &gem3 {
 	phy-handle = <&phyc>;
-	phyc: phy@c {
-		reg = <0xc>;
+	phyc: phy@5 {
+		reg = <0x5>;
 		ti,rx-internal-delay = <0x8>;
 		ti,tx-internal-delay = <0xa>;
 		ti,fifo-depth = <0x1>;
