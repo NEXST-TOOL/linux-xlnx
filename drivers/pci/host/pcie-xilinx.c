@@ -227,7 +227,7 @@ static int xilinx_pcie_config_read(struct pci_bus *bus, unsigned int devfn,
 	}
 
 	relbus = (bus->number << ECAM_BUS_NUM_SHIFT) | 
-			(devfn << ECAM_DEV_NUM_SHIFT);
+			((bus->number ? devfn : 0) << ECAM_DEV_NUM_SHIFT);
 
 	addr = port->reg_base + relbus + where;
 
@@ -263,7 +263,7 @@ static int xilinx_pcie_config_write(struct pci_bus *bus, unsigned int devfn,
 		return PCIBIOS_DEVICE_NOT_FOUND;
 
 	relbus = (bus->number << ECAM_BUS_NUM_SHIFT) | 
-			(devfn << ECAM_DEV_NUM_SHIFT);
+			((bus->number ? devfn : 0) << ECAM_DEV_NUM_SHIFT);
 
 	addr = port->reg_base + relbus + where;
 

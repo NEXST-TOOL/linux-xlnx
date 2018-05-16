@@ -15,7 +15,7 @@
 			compatible = "xlnx,axi-pcie-host-1.00.a";
 			device_type = "pci";
 			reg = <0x0 0x80000000 0x0 0x200000>,
-				<0x0 0x80200000 0x0 0x200000>;
+				<0x0 0x90000000 0x0 0x200000>;
 			reg-names = "rp0", "rp1";
 			#address-cells = <3>;
 			#size-cells = <2>;
