@@ -1,88 +1,127 @@
 * Xilinx AXI PCIe Root Port Bridge DT description
 
 Required properties:
-- #address-cells: Address representation for root ports, set to <3>
-- #size-cells: Size representation for root ports, set to <2>
-- #interrupt-cells: specifies the number of cells needed to encode an
-	interrupt source. The value must be 1.
 - compatible: Should contain "xlnx,axi-pcie-host-1.00.a"
-- reg: Should contain AXI PCIe registers location and length
 - device_type: must be "pci"
-- interrupts: Should contain AXI PCIe interrupt
-- interrupt-map-mask,
-  interrupt-map: standard PCI properties to define the mapping of the
-	PCI interface to interrupt numbers.
+- reg: Base addresses and lengths of each PCIe root ports.
+- reg-names: Names of the above areas to use during resource lookup.
+- #address-cells: Address representation for root ports, set to <3>
+  - cell 0 specifies the bus and device numbers of the root port:
+    [23:16]: bus number
+    [15:11]: device number
+  - cell 1 denotes the upper 32 address bits and should be 0
+  - cell 2 contains the lower 32 address bits and is used to translate to the
+    CPU address space
+- #size-cells: Size representation for root ports, set to <2>
+- #interrupt-cells: The value must be 1.
+- interrupts: Should contain AXI PCIe interrupt of each root port
 - ranges: ranges for the PCI memory regions (I/O space region is not
 	supported by hardware)
 	Please refer to the standard PCI bus binding document for a more
 	detailed explanation
+- bus-range: (Optional) PCI bus numbers covered
 
-Optional properties for Zynq/Microblaze:
-- bus-range: PCI bus numbers covered
-
-Interrupt controller child node
+PCIe Root Port child node
 +++++++++++++++++++++++++++++++
 Required properties:
-- interrupt-controller: identifies the node as an interrupt controller
-- #address-cells: specifies the number of cells needed to encode an
-	address. The value must be 0.
+- device_type: Must be "pci"
+- reg: Only the first four bytes are used to refer to the correct bus number 
+	and device number.
+- #address-cells: Must be 3
+- #size-cells: Must be 2
 - #interrupt-cells: specifies the number of cells needed to encode an
 	interrupt source. The value must be 1.
-
-NOTE:
-The core provides a single interrupt for both INTx/MSI messages. So,
-created a interrupt controller node to support 'interrupt-map' DT
-functionality.  The driver will create an IRQ domain for this map, decode
-the four INTx interrupts in ISR and route them to this domain.
-
+- ranges: Sub-ranges distributed from the PCIe controller node. 
+	An empty property is sufficient.
+- interrupt-map-mask and interrupt-map: Standard PCI IRQ mapping properties. 
+	Please refer to the standard PCI bus binding document for a more 
+	detailed explanation.
+- num-lanes: Number of lanes to use for this port
+- sub node: A list of interrupt outputs of the controller, must have one entry 
+	for each PCIe port
+    Required properties:
+    - interrupt-controller: identifies the node as an interrupt controller
+	- #address-cells: specifies the number of cells needed to encode an
+		address. The value must be 0.
+	- #interrupt-cells: specifies the number of cells needed to encode an
+		interrupt source. The value must be 1.
 
 Example:
 ++++++++
 Zynq:
 	pci_express: axi-pcie@50000000 {
+		compatible = "xlnx,axi-pcie-host-1.00.a";
+		device_type = "pci";
+		reg = < 0x50000000 0x1000000 >,	/*Root Port 0*/
+			  < 0x60000000 0x1000000 >, /*Root Port 1*/
+			  < 0x70000000 0x1000000 >; /*Root Port 2*/
+		reg-names = "rp0", "rp1", "rp2";
 		#address-cells = <3>;
 		#size-cells = <2>;
 		#interrupt-cells = <1>;
-		compatible = "xlnx,axi-pcie-host-1.00.a";
-		reg = < 0x50000000 0x1000000 >;
-		device_type = "pci";
-		interrupts = < 0 52 4 >;
-		interrupt-map-mask = <0 0 0 7>;
-		interrupt-map = <0 0 0 1 &pcie_intc 1>,
-				<0 0 0 2 &pcie_intc 2>,
-				<0 0 0 3 &pcie_intc 3>,
-				<0 0 0 4 &pcie_intc 4>;
+		interrupts = < 0 52 4 >,
+				     < 0 53 4 >,
+					 < 0 54 4 >;
 		ranges = < 0x02000000 0 0x60000000 0x60000000 0 0x10000000 >;
 
-		pcie_intc: interrupt-controller {
-			interrupt-controller;
-			#address-cells = <0>;
+		pcie0: pcie@0,0 {
+			device_type = "pci";
+			reg = <0x0000 0 0 0 0>;
+			#address-cells = <3>;
+			#size-cells = <2>;
 			#interrupt-cells = <1>;
+			ranges;
+			interrupt-map-mask = <0 0 0 7>;
+			interrupt-map = <0 0 0 1 &pcie_intc0 1>,
+				<0 0 0 2 &pcie_intc0 2>,
+				<0 0 0 3 &pcie_intc0 3>,
+				<0 0 0 4 &pcie_intc0 4>;
+
+			pcie_intc0: interrupt-controller {
+				interrupt-controller;
+				#address-cells = <0>;
+				#interrupt-cells = <1>;
+			};
+		};
+
+		pcie1: pcie@1,0 {
+			device_type = "pci";
+			reg = <0x0800 0 0 0 0>;
+			#address-cells = <3>;
+			#size-cells = <2>;
+			#interrupt-cells = <1>;
+			ranges;
+			interrupt-map-mask = <0 0 0 7>;
+			interrupt-map = <0 0 0 1 &pcie_intc1 1>,
+				<0 0 0 2 &pcie_intc1 2>,
+				<0 0 0 3 &pcie_intc1 3>,
+				<0 0 0 4 &pcie_intc1 4>;
+
+			pcie_intc1: interrupt-controller {
+				interrupt-controller;
+				#address-cells = <0>;
+				#interrupt-cells = <1>;
+			};
+		};
+
+		pcie2: pcie@2,0 {
+			device_type = "pci";
+			reg = <0x1000 0 0 0 0>;
+			#address-cells = <3>;
+			#size-cells = <2>;
+			#interrupt-cells = <1>;
+			ranges;
+			interrupt-map-mask = <0 0 0 7>;
+			interrupt-map = <0 0 0 1 &pcie_intc2 1>,
+				<0 0 0 2 &pcie_intc2 2>,
+				<0 0 0 3 &pcie_intc2 3>,
+				<0 0 0 4 &pcie_intc2 4>;
+
+			pcie_intc2: interrupt-controller {
+				interrupt-controller;
+				#address-cells = <0>;
+				#interrupt-cells = <1>;
+			};
 		};
 	};
 
-
-Microblaze:
-	pci_express: axi-pcie@10000000 {
-		#address-cells = <3>;
-		#size-cells = <2>;
-		#interrupt-cells = <1>;
-		compatible = "xlnx,axi-pcie-host-1.00.a";
-		reg = <0x10000000 0x4000000>;
-		device_type = "pci";
-		interrupt-parent = <&microblaze_0_intc>;
-		interrupts = <1 2>;
-		interrupt-map-mask = <0 0 0 7>;
-		interrupt-map = <0 0 0 1 &pcie_intc 1>,
-				<0 0 0 2 &pcie_intc 2>,
-				<0 0 0 3 &pcie_intc 3>,
-				<0 0 0 4 &pcie_intc 4>;
-		ranges = <0x02000000 0x00000000 0x80000000 0x80000000 0x00000000 0x10000000>;
-
-		pcie_intc: interrupt-controller {
-			interrupt-controller;
-			#address-cells = <0>;
-			#interrupt-cells = <1>;
-		};
-
-	};
