@@ -34,3 +34,15 @@ config NVME_TARGET_RDMA
 	  devices over RDMA.
 
 	  If unsure, say N.
+
+config NVME_TARGET_TCP
+	tristate "NVMe over Fabrics TCP target support"
+	depends on NVME_TARGET
+	select NVME_CORE
+	select NVME_FABRICS
+	select SG_POOL
+	help
+	  This enables the NVMe TCP target support, which allows exporting
+	  NVMe devices over TCP.
+
+	  If unsure, say N.
