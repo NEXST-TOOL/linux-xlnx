@@ -283,9 +283,12 @@ static void __maybe_unused axienet_bd_free(struct net_device *ndev,
 {
 	int i;
 	struct axienet_local *lp = netdev_priv(ndev);
+	dma_addr_t buf_phys;
 
 	for (i = 0; i < RX_BD_NUM; i++) {
-		dma_unmap_single(ndev->dev.parent, q->rx_bd_v[i].phys,
+		buf_phys = (u64)(q->rx_bd_v[i].phys);
+		buf_phys += ( ((u64)q->rx_bd_v[i].phys_high) << 32 );
+		dma_unmap_single(ndev->dev.parent, buf_phys,
 				 lp->max_frm_size, DMA_FROM_DEVICE);
 		dev_kfree_skb((struct sk_buff *)
 			      (q->rx_bd_v[i].sw_id_offset));
@@ -516,6 +519,7 @@ static int __maybe_unused axienet_dma_q_init(struct net_device *ndev,
 	int i;
 	struct sk_buff *skb;
 	struct axienet_local *lp = netdev_priv(ndev);
+	dma_addr_t bd_next, bd_phys;
 
 	/* Reset the indexes which are used for accessing the BDs */
 	q->tx_bd_ci = 0;
@@ -536,9 +540,9 @@ static int __maybe_unused axienet_dma_q_init(struct net_device *ndev,
 		goto out;
 
 	for (i = 0; i < TX_BD_NUM; i++) {
-		q->tx_bd_v[i].next = q->tx_bd_p +
-				      sizeof(*q->tx_bd_v) *
-				      ((i + 1) % TX_BD_NUM);
+		bd_next = q->tx_bd_p + sizeof(*q->tx_bd_v) * ((i + 1) % TX_BD_NUM);
+		q->tx_bd_v[i].next = (u32)(bd_next & 0x00000000FFFFFFFF);
+		q->tx_bd_v[i].next_high = (u32)((bd_next >> 32) & 0x00000000FFFFFFFF);
 	}
 
 	if (!q->eth_hasdre) {
@@ -554,9 +558,11 @@ static int __maybe_unused axienet_dma_q_init(struct net_device *ndev,
 	}
 
 	for (i = 0; i < RX_BD_NUM; i++) {
-		q->rx_bd_v[i].next = q->rx_bd_p +
+		bd_next = q->rx_bd_p +
 				      sizeof(*q->rx_bd_v) *
 				      ((i + 1) % RX_BD_NUM);
+		q->rx_bd_v[i].next = (u32)(bd_next & 0x00000000FFFFFFFF);
+		q->rx_bd_v[i].next_high = (u32)((bd_next >> 32) & 0x00000000FFFFFFFF);
 
 		skb = netdev_alloc_skb(ndev, lp->max_frm_size);
 		if (!skb)
@@ -568,10 +574,12 @@ static int __maybe_unused axienet_dma_q_init(struct net_device *ndev,
 		wmb();
 
 		q->rx_bd_v[i].sw_id_offset = (phys_addr_t)skb;
-		q->rx_bd_v[i].phys = dma_map_single(ndev->dev.parent,
+		bd_phys = dma_map_single(ndev->dev.parent,
 						     skb->data,
 						     lp->max_frm_size,
 						     DMA_FROM_DEVICE);
+		q->rx_bd_v[i].phys = (u32)(bd_phys & 0x00000000FFFFFFFF);
+		q->rx_bd_v[i].phys_high = (u32)((bd_phys >> 32) & 0x00000000FFFFFFFF);
 		q->rx_bd_v[i].cntrl = lp->max_frm_size;
 	}
 
@@ -862,7 +870,7 @@ static void axienet_device_reset(struct net_device *ndev)
 {
 	u32 axienet_status;
 	struct axienet_local *lp = netdev_priv(ndev);
-	u32 err, val;
+	u32 err = 0, val;
 	struct axienet_dma_q *q;
 	u32 i;
 
@@ -1175,6 +1183,7 @@ static void axienet_start_xmit_done(struct net_device *ndev,
 	struct axidma_bd *cur_p;
 #endif
 	unsigned int status = 0;
+	dma_addr_t tx_buf_phys;
 
 #ifdef CONFIG_AXIENET_HAS_MCDMA
 	cur_p = &q->txq_bd_v[q->tx_bd_ci];
@@ -1188,13 +1197,16 @@ static void axienet_start_xmit_done(struct net_device *ndev,
 		if (cur_p->ptp_tx_skb)
 			axienet_tx_hwtstamp(lp, cur_p);
 #endif
+		tx_buf_phys = (u64)cur_p->phys;
+ 		tx_buf_phys += (((u64)cur_p->phys_high) << 32);
+
 		if (cur_p->tx_desc_mapping == DESC_DMA_MAP_PAGE)
-			dma_unmap_page(ndev->dev.parent, cur_p->phys,
+			dma_unmap_page(ndev->dev.parent, tx_buf_phys,
 				       cur_p->cntrl &
 				       XAXIDMA_BD_CTRL_LENGTH_MASK,
 				       DMA_TO_DEVICE);
 		else
-			dma_unmap_single(ndev->dev.parent, cur_p->phys,
+			dma_unmap_single(ndev->dev.parent, tx_buf_phys,
 					 cur_p->cntrl &
 					 XAXIDMA_BD_CTRL_LENGTH_MASK,
 					 DMA_TO_DEVICE);
@@ -1394,6 +1406,7 @@ static int axienet_start_xmit(struct sk_buff *skb, struct net_device *ndev)
 	struct axidma_bd *cur_p;
 #endif
 	unsigned long flags;
+ 	dma_addr_t tx_buf_phys;
 	u32 pad = 0;
 	struct axienet_dma_q *q;
 	u16 map = skb_get_queue_mapping(skb); /* Single dma queue default*/
@@ -1545,7 +1558,7 @@ static int axienet_start_xmit(struct sk_buff *skb, struct net_device *ndev)
 	    (((phys_addr_t)skb->data & 0x3) || (num_frag > 0))) {
 		skb_copy_and_csum_dev(skb, q->tx_buf[q->tx_bd_tail]);
 
-		cur_p->phys = q->tx_bufs_dma +
+		tx_buf_phys = q->tx_bufs_dma +
 			      (q->tx_buf[q->tx_bd_tail] - q->tx_bufs);
 
 #ifdef CONFIG_AXIENET_HAS_MCDMA
@@ -1555,9 +1568,13 @@ static int axienet_start_xmit(struct sk_buff *skb, struct net_device *ndev)
 #endif
 		goto out;
 	} else {
-		cur_p->phys = dma_map_single(ndev->dev.parent, skb->data,
+		tx_buf_phys = dma_map_single(ndev->dev.parent, skb->data,
 					     skb_headlen(skb), DMA_TO_DEVICE);
 	}
+
+	cur_p->phys = (u32)(tx_buf_phys & (0x00000000FFFFFFFF)); 
+ 	cur_p->phys_high = (u32)((tx_buf_phys >> 32) & (0x00000000FFFFFFFF)); 
+
 	cur_p->tx_desc_mapping = DESC_DMA_MAP_SINGLE;
 
 	for (ii = 0; ii < num_frag; ii++) {
@@ -1573,12 +1590,16 @@ static int axienet_start_xmit(struct sk_buff *skb, struct net_device *ndev)
 #endif
 		frag = &skb_shinfo(skb)->frags[ii];
 		len = skb_frag_size(frag);
-		cur_p->phys = skb_frag_dma_map(ndev->dev.parent, frag, 0, len,
+		tx_buf_phys = skb_frag_dma_map(ndev->dev.parent, frag, 0, len,
 					       DMA_TO_DEVICE);
 		cur_p->cntrl = len;
 		/* Only add padding to the end of the last element */
 		if ((ii + 1) == num_frag)
 			cur_p->cntrl = len + pad;
+
+		cur_p->phys = (u32)(tx_buf_phys & (0x00000000FFFFFFFF));
+ 		cur_p->phys_high = (u32)((tx_buf_phys >> 32) & (0x00000000FFFFFFFF)); 
+
 		cur_p->tx_desc_mapping = DESC_DMA_MAP_PAGE;
 	}
 
@@ -1630,6 +1651,8 @@ static int axienet_recv(struct net_device *ndev, int budget,
 	u32 size = 0;
 	u32 packets = 0;
 	dma_addr_t tail_p = 0;
+	dma_addr_t rx_buf_phys;
+ 	dma_addr_t buf_phys;
 	struct axienet_local *lp = netdev_priv(ndev);
 	struct sk_buff *skb, *new_skb;
 #ifdef CONFIG_AXIENET_HAS_MCDMA
@@ -1662,7 +1685,10 @@ static int axienet_recv(struct net_device *ndev, int budget,
 		else
 			length = cur_p->app4 & 0x0000FFFF;
 
-		dma_unmap_single(ndev->dev.parent, cur_p->phys,
+		buf_phys = (u64)(cur_p->phys);
+ 		buf_phys += ( ((u64)(cur_p->phys_high)) << 32);
+
+		dma_unmap_single(ndev->dev.parent, buf_phys,
 				 lp->max_frm_size,
 				 DMA_FROM_DEVICE);
 
@@ -1738,9 +1764,13 @@ static int axienet_recv(struct net_device *ndev, int budget,
 		 */
 		wmb();
 
-		cur_p->phys = dma_map_single(ndev->dev.parent, new_skb->data,
+		rx_buf_phys = dma_map_single(ndev->dev.parent, new_skb->data,
 					     lp->max_frm_size,
 					     DMA_FROM_DEVICE);
+
+		cur_p->phys = (u32)(rx_buf_phys & 0x00000000FFFFFFFF); 
+ 		cur_p->phys_high = (u32)((rx_buf_phys >> 32) & 0x00000000FFFFFFFF); 
+
 		cur_p->cntrl = lp->max_frm_size;
 		cur_p->status = 0;
 		cur_p->sw_id_offset = (phys_addr_t)new_skb;
@@ -3239,6 +3269,7 @@ static void __maybe_unused axienet_dma_err_handler(unsigned long data)
 	struct axienet_local *lp = q->lp;
 	struct net_device *ndev = lp->ndev;
 	struct axidma_bd *cur_p;
+	dma_addr_t phys_buf;
 
 	lp->axienet_config->setoptions(ndev, lp->options &
 				       ~(XAE_OPTION_TXEN | XAE_OPTION_RXEN));
@@ -3266,14 +3297,18 @@ static void __maybe_unused axienet_dma_err_handler(unsigned long data)
 
 	for (i = 0; i < TX_BD_NUM; i++) {
 		cur_p = &q->tx_bd_v[i];
-		if (cur_p->phys)
-			dma_unmap_single(ndev->dev.parent, cur_p->phys,
+		if (cur_p->phys || cur_p->phys_high) {
+			phys_buf = (u64)(cur_p->phys);
+ 			phys_buf += ( ((u64)(cur_p->phys_high)) << 32); 
+			dma_unmap_single(ndev->dev.parent, phys_buf,
 					 (cur_p->cntrl &
 					  XAXIDMA_BD_CTRL_LENGTH_MASK),
 					 DMA_TO_DEVICE);
+		}
 		if (cur_p->tx_skb)
 			dev_kfree_skb_irq((struct sk_buff *)cur_p->tx_skb);
 		cur_p->phys = 0;
+		cur_p->phys_high = 0;
 		cur_p->cntrl = 0;
 		cur_p->status = 0;
 		cur_p->app0 = 0;
@@ -3568,6 +3603,8 @@ static const struct of_device_id axienet_of_match[] = {
 						.data = &axienet_2_5g_config},
 	{ .compatible = "xlnx,ten-gig-eth-mac", .data = &axienet_10g_config},
 	{ .compatible = "xlnx,xxv-ethernet-1.0",
+						.data = &axienet_10g25g_config},
+	{ .compatible = "xlnx,xxv-ethernet-2.0",
 						.data = &axienet_10g25g_config},
 	{ .compatible = "xlnx,tsn-ethernet-1.00.a", .data = &axienet_1g_config},
 	{ .compatible = "xlnx,xxv-usxgmii-ethernet-1.0",
