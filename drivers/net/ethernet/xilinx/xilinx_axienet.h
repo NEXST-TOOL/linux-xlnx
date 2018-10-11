@@ -493,9 +493,9 @@
  */
 struct axidma_bd {
 	u32 next;	/* Physical address of next buffer descriptor */
-	u32 reserved1;
+	u32 next_high;
 	u32 phys;
-	u32 reserved2;
+	u32 phys_high;
 	u32 reserved3;
 	u32 reserved4;
 	u32 cntrl;
