@@ -101,7 +101,7 @@ struct config_group {
 extern void config_group_init(struct config_group *group);
 extern void config_group_init_type_name(struct config_group *group,
 					const char *name,
-					struct config_item_type *type);
+					const struct config_item_type *type);
 
 static inline struct config_group *to_config_group(struct config_item *item)
 {
