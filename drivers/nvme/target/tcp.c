@@ -1399,15 +1399,15 @@ static int nvmet_tcp_set_queue_sock(struct nvmet_tcp_queue *queue)
 {
 	struct socket *sock = queue->sock;
 	struct linger sol = { .l_onoff = 1, .l_linger = 0 };
-	int ret;
+	int ret, len;
 
 	ret = kernel_getsockname(sock,
-		(struct sockaddr *)&queue->sockaddr);
+		(struct sockaddr *)&queue->sockaddr, &len);
 	if (ret < 0)
 		return ret;
 
 	ret = kernel_getpeername(sock,
-		(struct sockaddr *)&queue->sockaddr_peer);
+		(struct sockaddr *)&queue->sockaddr_peer, &len);
 	if (ret < 0)
 		return ret;
 
