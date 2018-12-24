@@ -254,6 +254,12 @@ static void nvmet_port_init_tsas_fc(struct nvmet_port *port)
 	memset(&port->disc_addr.tsas, 0, NVMF_TSAS_SIZE);
 }
 
+static void nvmet_port_init_tsas_tcp(struct nvmet_port *port)
+{
+	port->disc_addr.trtype = NVMF_TRTYPE_TCP;
+	memset(&port->disc_addr.tsas, 0, NVMF_TSAS_SIZE);
+}
+
 static ssize_t nvmet_addr_trtype_store(struct config_item *item,
 		const char *page, size_t count)
 {
@@ -271,6 +277,8 @@ static ssize_t nvmet_addr_trtype_store(struct config_item *item,
 		nvmet_port_init_tsas_loop(port);
 	} else if (sysfs_streq(page, "fc")) {
 		nvmet_port_init_tsas_fc(port);
+	} else if (sysfs_streq(page, "tcp")) {
+		nvmet_port_init_tsas_tcp(port);
 	} else {
 		pr_err("Invalid value '%s' for trtype\n", page);
 		return -EINVAL;
