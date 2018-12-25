@@ -1571,7 +1571,7 @@ static int nvmet_tcp_add_port(struct nvmet_port *nport)
 	port->nport = nport;
 	port->last_cpu = -1;
 	INIT_WORK(&port->accept_work, nvmet_tcp_accept_work);
-	if (port->nport->inline_data_size < 0)
+	if (port->nport->inline_data_size <= 0)
 		port->nport->inline_data_size = NVMET_TCP_DEF_INLINE_DATA_SIZE;
 
 	ret = sock_create(port->addr.ss_family, SOCK_STREAM,
