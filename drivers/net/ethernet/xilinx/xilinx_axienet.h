@@ -3,6 +3,8 @@
  *
  * Copyright (c) 2009 Secret Lab Technologies, Ltd.
  * Copyright (c) 2010 - 2012 Xilinx, Inc. All rights reserved.
+ *
+ * 2015.03.26 Add Support to NAPI by Yisong Chang from ICT
  */
 
 #ifndef XILINX_AXIENET_H
@@ -175,6 +177,17 @@
 #define XAE_RX_VLAN_DATA_OFFSET 0x00008000 /* RX VLAN data table address */
 #define XAE_MCAST_TABLE_OFFSET	0x00020000 /* Multicast table address */
 
+#define XAE_RXUNDRL_OFFSET		0x00000210
+#define XAE_RXUNDRU_OFFSET		0x00000214
+#define XAE_RXFRAGL_OFFSET		0x00000218
+#define XAE_RXFRAGU_OFFSET		0x0000021C
+#define XAE_RXOVRL_OFFSET		0x00000250
+#define XAE_RXOVRU_OFFSET		0x00000254
+#define XAE_RXFCSERL_OFFSET		0x00000298
+#define XAE_RXFCSERU_OFFSET		0x0000029C
+#define XAE_RXLTERL_OFFSET		0x000002B8
+#define XAE_RXLTERU_OFFSET		0x000002BC
+
 /* Bit Masks for Axi Ethernet RAF register */
 #define XAE_RAF_MCSTREJ_MASK		0x00000002 /* Reject receive multicast
 						    * destination address */
@@ -345,6 +358,13 @@
 #endif
 #endif
 
+/* To support NAPI, TX and RX queue must be managed by ethernet driver itself*/
+struct ring_info {
+	struct sk_buff	*skb;
+	dma_addr_t		mapping;
+	size_t			len;
+};
+
 /**
  * struct axidma_bd - Axi Dma buffer descriptor layout
  * @next:         MM2S/S2MM Next Descriptor Pointer
@@ -427,6 +447,9 @@ struct axienet_local {
   struct timer_list phy_timer;
   u8 gmii_addr;
 
+  //- Support NAPI
+  struct napi_struct napi;
+
 	/* Connection to PHY device */
 	struct phy_device *phy_dev;	/* Pointer to PHY device */
 	struct device_node *phy_node;
@@ -455,9 +478,21 @@ struct axienet_local {
 	dma_addr_t tx_bd_p;
 	struct axidma_bd *rx_bd_v;
 	dma_addr_t rx_bd_p;
+
+	/* SKB ring buffer */
+	struct ring_info *tx_skb;
+	struct ring_info *rx_skb;
+
+	spinlock_t rx_lock;
+	spinlock_t tx_lock;
+
 	u32 tx_bd_ci;
 	u32 tx_bd_tail;
-	u32 rx_bd_ci;
+
+	//a bundle of RX Ring Buffers would be clean in rx_poll method
+	//avoid one buffer clean at a time when skb receive
+	u32 rx_bd_ci;	//next to clean index
+	u32 rx_bd_ui;	//next to use index
 
 	u32 max_frm_size;
 	u32 rxmem;
@@ -468,6 +503,26 @@ struct axienet_local {
 	u32 coalesce_count_rx;
 	u32 coalesce_count_tx;
 	struct gpio_desc *gpio_rst;
+
+	unsigned int tx_irq_total;
+	unsigned int tx_irq_valid;
+	unsigned int tx_irq_false;
+
+	unsigned int rx_irq_total;
+	unsigned int rx_irq_valid;
+	unsigned int rx_irq_false;
+
+	unsigned int rx_poll_total;
+	unsigned int rx_poll_not_enough;
+	unsigned int rx_poll_exit;
+
+	unsigned int dma_tx_cr_def;
+	unsigned int dma_rx_cr_def;
+
+	//proc file system
+	struct proc_dir_entry *axienet_proc_dev_dir;
+	struct proc_dir_entry *axienet_proc_stat_dir;
+	struct proc_dir_entry *axienet_proc_stat_intr;
 };
 
 /**

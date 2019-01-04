@@ -35,10 +35,18 @@
 #include <linux/ethtool.h>
 #include <linux/gpio/consumer.h>
 #include "xilinx_axienet.h"
+#include <linux/proc_fs.h>
 
 /* Descriptors defines for Tx and Rx DMA - 2^n for the best performance */
-#define TX_BD_NUM		64
-#define RX_BD_NUM		128
+#define TX_BD_NUM		256
+#define RX_BD_NUM		512
+
+#define TX_BD_MASK		((1 << 8) - 1)
+#define RX_BD_MASK		((1 << 9) - 1)
+
+/* NAPI Poll Weight*/
+#define AXIENET_NAPI_WEIGHT		64
+#define AXIENET_NAPI_TX_BUDGET	64
 
 /* Must be shorter than length of ethtool_drvinfo.driver field to fit */
 #define DRIVER_NAME		"xaxienet"
@@ -46,6 +54,7 @@
 #define DRIVER_VERSION		"1.00a"
 
 #define AXIENET_REGS_N		32
+
 
 /* Match table for of_platform binding */
 static struct of_device_id axienet_of_match[] = {
@@ -158,6 +167,40 @@ static inline void axienet_dma_out32(struct axienet_local *lp,
 	out_be32((lp->dma_regs + reg), value);
 }
 
+/*
+ * Free all packets presently in the descriptor rings.reg
+ */
+/*static void axienet_clean_rings(struct axienet_local *lp)
+{
+	int i;
+
+	for (i = 0; i < RX_BD_NUM; i++) {
+		if (lp->rx_skb && lp->rx_skb[i].skb) {
+			dma_unmap_single(lp->ndev->dev.parent,
+					 lp->rx_skb[i].mapping,
+					 lp->rx_skb[i].len,
+					 DMA_FROM_DEVICE);
+
+			dev_kfree_skb(lp->rx_skb[i].skb);
+			lp->rx_skb[i].skb = NULL;
+			lp->rx_skb[i].mapping = 0;
+		}
+	}
+
+	for (i = 0; i < TX_BD_NUM; i++) {
+		if (lp->tx_skb && lp->tx_skb[i].skb) {
+			dma_unmap_single(lp->ndev->dev.parent,
+					 lp->tx_skb[i].mapping,
+					 lp->tx_skb[i].len,
+					 DMA_TO_DEVICE);
+
+			dev_kfree_skb(lp->tx_skb[i].skb);
+			lp->tx_skb[i].skb = NULL;
+			lp->tx_skb[i].mapping = 0;
+		}
+	}
+}*/
+
 /**
  * axienet_dma_bd_release - Release buffer descriptor rings
  * @ndev:	Pointer to the net_device structure
@@ -168,27 +211,31 @@ static inline void axienet_dma_out32(struct axienet_local *lp,
  */
 static void axienet_dma_bd_release(struct net_device *ndev)
 {
-	int i;
 	struct axienet_local *lp = netdev_priv(ndev);
 
-	for (i = 0; i < RX_BD_NUM; i++) {
-		dma_unmap_single(ndev->dev.parent, lp->rx_bd_v[i].phys,
-				 lp->max_frm_size, DMA_FROM_DEVICE);
-		dev_kfree_skb((struct sk_buff *)
-			      (lp->rx_bd_v[i].sw_id_offset));
-	}
+	//axienet_clean_rings(lp);
+
+	/* kfree(NULL) is safe, no need to check here */
+	/*kfree(lp->tx_skb);
+	lp->tx_skb = NULL;
+	kfree(lp->rx_skb);
+	lp->rx_skb = NULL;*/
 
 	if (lp->rx_bd_v) {
 		dma_free_coherent(ndev->dev.parent,
 				  sizeof(*lp->rx_bd_v) * RX_BD_NUM,
 				  lp->rx_bd_v,
 				  lp->rx_bd_p);
+
+		lp->rx_bd_v = NULL;
 	}
 	if (lp->tx_bd_v) {
 		dma_free_coherent(ndev->dev.parent,
 				  sizeof(*lp->tx_bd_v) * TX_BD_NUM,
 				  lp->tx_bd_v,
 				  lp->tx_bd_p);
+
+		lp->tx_bd_v = NULL;
 	}
 }
 
@@ -208,11 +255,32 @@ static int axienet_dma_bd_init(struct net_device *ndev)
 	int i;
 	struct sk_buff *skb;
 	struct axienet_local *lp = netdev_priv(ndev);
+	//int size;
+	u32 new_skb_baddr;
+
+	//lp->tx_skb = NULL;
+	//lp->rx_skb = NULL;
+
+	lp->tx_bd_v = NULL;
+	lp->rx_bd_v = NULL;
 
 	/* Reset the indexes which are used for accessing the BDs */
 	lp->tx_bd_ci = 0;
 	lp->tx_bd_tail = 0;
+
 	lp->rx_bd_ci = 0;
+	lp->rx_bd_ui = 0;
+
+	/* Allocate skb ring buffer */
+	/*size = TX_BD_NUM * sizeof(struct ring_info);
+	lp->tx_skb = kzalloc(size, GFP_KERNEL);
+	if (!lp->tx_skb)
+		goto out;
+
+	size = RX_BD_NUM * sizeof(struct ring_info);
+	lp->rx_skb = kzalloc(size, GFP_KERNEL);
+	if (!lp->rx_skb)
+		goto out;*/
 
 	/* Allocate the Tx and Rx buffer descriptors. */
 	lp->tx_bd_v = dma_zalloc_coherent(ndev->dev.parent,
@@ -243,13 +311,24 @@ static int axienet_dma_bd_init(struct net_device *ndev)
 			goto out;
 
 		lp->rx_bd_v[i].sw_id_offset = (u32) skb;
-		lp->rx_bd_v[i].phys = dma_map_single(ndev->dev.parent,
+		new_skb_baddr = dma_map_single(ndev->dev.parent,
 						     skb->data,
 						     lp->max_frm_size,
 						     DMA_FROM_DEVICE);
-		if (dma_mapping_error(ndev->dev.parent , lp->rx_bd_v[i].phys))
+		if (dma_mapping_error(ndev->dev.parent , new_skb_baddr))
+		{
 			printk(KERN_ERR "dma_mapping_error :: \n");
+			goto out;
+		}
+
+		lp->rx_bd_v[i].phys = new_skb_baddr;
 		lp->rx_bd_v[i].cntrl = lp->max_frm_size;
+
+		wmb();
+
+		/*lp->rx_skb[i].skb = skb;
+		lp->rx_skb[i].mapping = new_skb_baddr;
+		lp->rx_skb[i].len = lp->max_frm_size;*/
 	}
 
 	/* Start updating the Rx channel control register */
@@ -260,6 +339,8 @@ static int axienet_dma_bd_init(struct net_device *ndev)
 	/* Update the delay timer count */
 	cr = ((cr & ~XAXIDMA_DELAY_MASK) |
 	      (XAXIDMA_DFT_RX_WAITBOUND << XAXIDMA_DELAY_SHIFT));
+	/* store its default control word as a global variable */	
+	lp->dma_rx_cr_def = cr | (XAXIDMA_CR_RUNSTOP_MASK | XAXIDMA_IRQ_ERROR_MASK);
 	/* Enable coalesce, delay timer and error interrupts */
 	cr |= XAXIDMA_IRQ_ALL_MASK;
 	/* Write to the Rx channel control register */
@@ -273,6 +354,8 @@ static int axienet_dma_bd_init(struct net_device *ndev)
 	/* Update the delay timer count */
 	cr = (((cr & ~XAXIDMA_DELAY_MASK)) |
 	      (XAXIDMA_DFT_TX_WAITBOUND << XAXIDMA_DELAY_SHIFT));
+	/* store its default control word as a global variable */	
+	lp->dma_tx_cr_def = cr | (XAXIDMA_CR_RUNSTOP_MASK | XAXIDMA_IRQ_ERROR_MASK);
 	/* Enable coalesce, delay timer and error interrupts */
 	cr |= XAXIDMA_IRQ_ALL_MASK;
 	/* Write to the Tx channel control register */
@@ -617,15 +700,25 @@ static void axienet_start_xmit_done(struct net_device *ndev)
 	struct axienet_local *lp = netdev_priv(ndev);
 	struct axidma_bd *cur_p;
 	unsigned int status = 0;
+	unsigned int budget = AXIENET_NAPI_TX_BUDGET;	
 
 	cur_p = &lp->tx_bd_v[lp->tx_bd_ci];
 	status = cur_p->status;
-	while (status & XAXIDMA_BD_STS_COMPLETE_MASK) {
+
+	//spin_lock(&lp->tx_lock);
+	do{
+		//while (status & XAXIDMA_BD_STS_COMPLETE_MASK)
+		if ( !(status & XAXIDMA_BD_STS_COMPLETE_MASK) )
+			break;
+
 		dma_unmap_single(ndev->dev.parent, cur_p->phys,
 				(cur_p->cntrl & XAXIDMA_BD_CTRL_LENGTH_MASK),
 				DMA_TO_DEVICE);
 		if (cur_p->app4)
-			dev_kfree_skb_irq((struct sk_buff *)cur_p->app4);
+			//dev_kfree_skb_irq((struct sk_buff *)cur_p->app4);
+			//using dev_kfree_skb_any to avoid trigger NET_TX_SOFTIRQ
+			dev_kfree_skb_any((struct sk_buff *)cur_p->app4);
+
 		/*cur_p->phys = 0;*/
 		cur_p->app0 = 0;
 		cur_p->app1 = 0;
@@ -637,13 +730,16 @@ static void axienet_start_xmit_done(struct net_device *ndev)
 		packets++;
 
 		++lp->tx_bd_ci;
-		lp->tx_bd_ci %= TX_BD_NUM;
+		lp->tx_bd_ci &= TX_BD_MASK;
 		cur_p = &lp->tx_bd_v[lp->tx_bd_ci];
 		status = cur_p->status;
-	}
+		budget--;
+	}while(budget);
+	//spin_unlock(&lp->tx_lock);
 
 	ndev->stats.tx_packets += packets;
 	ndev->stats.tx_bytes += size;
+
 	netif_wake_queue(ndev);
 }
 
@@ -749,46 +845,153 @@ static int axienet_start_xmit(struct sk_buff *skb, struct net_device *ndev)
 	/* Start the transfer */
 	axienet_dma_out32(lp, XAXIDMA_TX_TDESC_OFFSET, tail_p);
 	++lp->tx_bd_tail;
-	lp->tx_bd_tail %= TX_BD_NUM;
+	lp->tx_bd_tail &= TX_BD_MASK;
 
 	return NETDEV_TX_OK;
 }
 
 /**
- * axienet_recv - Is called from Axi DMA Rx Isr to complete the received
- *		  BD processing.
- * @ndev:	Pointer to net_device structure.
- *
- * This function is invoked from the Axi DMA Rx isr to process the Rx BDs. It
- * does minimal processing and invokes "netif_rx" to complete further
- * processing.
+ * axienet_rx_buf_to_clean - Is called from axienet_recv poll method
+ * a bundle of RX Ring Buffer would be cleaned up at the same time
+ * instead of clean on entry at a time when skb receive
+ * @lp: local device instance pointer
+ * return the entry number to be cleaned.
+ * These type of Ring Buffer: skb is delivered to IP layer, while CPU read mask is not set
+ * and new skb is not mapping to this Ring Buffer entry
  */
-static void axienet_recv(struct net_device *ndev)
+static int axienet_rx_buf_to_clean(struct axienet_local *lp)
+{
+	u32 ntc = lp->rx_bd_ci;
+	u32 ntu = lp->rx_bd_ui;
+
+	return ((ntc >= ntu) ? 0 : RX_BD_NUM) + ntc - ntu;
+}
+
+/**
+ * axienet_rx_buf_clean - Is called from NAPI to clean a set of RX Ring Buffers
+ * to continue DMA data transfer
+ * Two tasks are processed: 1. clear Ring Buffer entry status
+ *							2. allocate new skb and mapping to this Ring Buffer
+ *@lp: local device instance pointer
+ *@to_clean_cnt: the number of Ring Buffers to be cleand
+ */
+static int axienet_rx_buf_clean(struct axienet_local *lp, u32 to_clean_cnt)
+{
+	struct axidma_bd *cur_p;
+	struct sk_buff *new_skb;
+	u32 new_skb_baddr;
+	dma_addr_t tail_p = 0;
+
+	if (!to_clean_cnt)
+		return 0;
+
+	/* Get relevat BD status value */
+	rmb();
+
+	while(to_clean_cnt){
+		
+		cur_p = &lp->rx_bd_v[lp->rx_bd_ui];
+
+		new_skb = netdev_alloc_skb_ip_align(lp->ndev, lp->max_frm_size);
+		if (!new_skb)
+			return 1;
+
+		new_skb_baddr = dma_map_single(lp->ndev->dev.parent, new_skb->data,
+					     lp->max_frm_size,
+					     DMA_FROM_DEVICE);
+
+		if (dma_mapping_error(lp->ndev->dev.parent, new_skb_baddr))
+		{
+			dev_kfree_skb_any(new_skb);
+			printk(KERN_ERR "dma_mapping_error \n");
+			return 1;
+		}
+		
+		cur_p->phys = new_skb_baddr;
+		cur_p->cntrl = lp->max_frm_size;
+		cur_p->status = 0;
+		cur_p->sw_id_offset = (u32) new_skb;
+
+		++lp->rx_bd_ui;
+		lp->rx_bd_ui &= RX_BD_MASK;
+		to_clean_cnt--;
+	}
+	//if (tail_p)
+	tail_p = lp->rx_bd_p + sizeof(*lp->rx_bd_v) * ((lp->rx_bd_ui + RX_BD_MASK) & RX_BD_MASK);
+	axienet_dma_out32(lp, XAXIDMA_RX_TDESC_OFFSET, tail_p);
+
+	BUG_ON(lp->rx_bd_ui != lp->rx_bd_ci);
+	return 0;
+}
+
+#define RX_CLEAN_CNT_BOUND	16
+
+/**
+ * axienet_recv - Is called from NAPI called to complete the receive packets
+ * @lp:	local device instance pointer.
+ * @budget: number of BDs processed
+ */
+static int axienet_recv(struct axienet_local *lp, int budget)
 {
 	u32 length;
 	u32 csumstatus;
 	u32 size = 0;
 	u32 packets = 0;
-	dma_addr_t tail_p = 0;
-	struct axienet_local *lp = netdev_priv(ndev);
-	struct sk_buff *skb, *new_skb;
+	u32 regval = 0;
+	struct sk_buff *skb;
 	struct axidma_bd *cur_p;
+	unsigned int numbdfree = 0;
+
+	u32 to_clean_count = axienet_rx_buf_to_clean(lp); 
+
+	BUG_ON(to_clean_count != 0);
 
 	/* Get relevat BD status value */
 	rmb();
 	cur_p = &lp->rx_bd_v[lp->rx_bd_ci];
 
-	while ((cur_p->status & XAXIDMA_BD_STS_COMPLETE_MASK)) {
-		tail_p = lp->rx_bd_p + sizeof(*lp->rx_bd_v) * lp->rx_bd_ci;
+	while (numbdfree < budget) {
+		if (!(cur_p->status & XAXIDMA_BD_STS_COMPLETE_MASK))
+		{
+			//clear DMA RX IRQ status
+			axienet_dma_out32(lp, XAXIDMA_RX_SR_OFFSET, (XAXIDMA_IRQ_IOC_MASK | XAXIDMA_IRQ_DELAY_MASK));
+			axienet_dma_out32(lp, XAXIDMA_TX_SR_OFFSET, (XAXIDMA_IRQ_IOC_MASK | XAXIDMA_IRQ_DELAY_MASK));
+			break;
+		}
+
+		if (to_clean_count >= RX_CLEAN_CNT_BOUND)
+		{
+			regval = axienet_rx_buf_clean(lp, to_clean_count);
+			to_clean_count = 0;
+			if(regval)
+			{
+				numbdfree = 0xFFFFFFFF;
+				break;
+			}
+		}
+
+		/* Since DMA interrupt has been disabled
+		 * if DMA receive error occured, we should detect it
+		 */
+		/*regval = axienet_dma_in32(lp, XAXIDMA_RX_SR_OFFSET);
+		axienet_dma_out32(lp, XAXIDMA_RX_SR_OFFSET, regval);
+		if (regval & XAXIDMA_IRQ_ERROR_MASK) {
+			dev_err(&lp->ndev->dev, "Rx error 0x%0x\n", regval);
+			numbdfree = 0xFFFFFFFF;
+			to_clean_count = 0;
+			break;
+		}*/
+
+		/*skb receive*/
 		skb = (struct sk_buff *) (cur_p->sw_id_offset);
 		length = cur_p->app4 & 0x0000FFFF;
 
-		dma_unmap_single(ndev->dev.parent, cur_p->phys,
+		dma_unmap_single(lp->ndev->dev.parent, cur_p->phys,
 				 lp->max_frm_size,
 				 DMA_FROM_DEVICE);
 
 		skb_put(skb, length);
-		skb->protocol = eth_type_trans(skb, ndev);
+		skb->protocol = eth_type_trans(skb, lp->ndev);
 		/*skb_checksum_none_assert(skb);*/
 		skb->ip_summed = CHECKSUM_NONE;
 
@@ -807,34 +1010,113 @@ static void axienet_recv(struct net_device *ndev)
 			skb->ip_summed = CHECKSUM_COMPLETE;
 		}
 
-		netif_rx(skb);
+		//netif_rx(skb);
+		netif_receive_skb(skb);
 
 		size += length;
 		packets++;
 
-		new_skb = netdev_alloc_skb_ip_align(ndev, lp->max_frm_size);
-		if (!new_skb)
-			return;
-
-		cur_p->phys = dma_map_single(ndev->dev.parent, new_skb->data,
-					     lp->max_frm_size,
-					     DMA_FROM_DEVICE);
-		if ( dma_mapping_error(ndev->dev.parent, cur_p->phys))
-			printk(KERN_ERR "dma_mapping_error \n");
-		cur_p->cntrl = lp->max_frm_size;
-		cur_p->status = 0;
-		cur_p->sw_id_offset = (u32) new_skb;
-
 		++lp->rx_bd_ci;
-		lp->rx_bd_ci %= RX_BD_NUM;
+		lp->rx_bd_ci &= RX_BD_MASK;
 		cur_p = &lp->rx_bd_v[lp->rx_bd_ci];
+
+		numbdfree++;
+		to_clean_count++;
 	}
+	lp->ndev->stats.rx_packets += packets;
+	lp->ndev->stats.rx_bytes += size;
 
-	ndev->stats.rx_packets += packets;
-	ndev->stats.rx_bytes += size;
+	if (to_clean_count)
+		axienet_rx_buf_clean(lp, to_clean_count);
 
-	if (tail_p)
-		axienet_dma_out32(lp, XAXIDMA_RX_TDESC_OFFSET, tail_p);
+	return numbdfree;
+}
+
+/**
+ * axienet_rx_poll - NAPI poll routine
+ * @napi: pointer to napi struct
+ * @budget: NAPI budget
+ * Return: number of BDs processed
+ */
+static int axienet_rx_poll(struct napi_struct *napi, int budget)
+{
+	struct axienet_local *lp = container_of(napi, struct axienet_local, napi);
+	int work_done = 0;
+	u32 count;
+	unsigned int status, cr;
+
+	//Free Completion TX Ring Buffer and skb
+	axienet_start_xmit_done(lp->ndev);
+
+	lp->rx_poll_total++;
+	
+	//Packet receive
+	//spin_lock(&lp->rx_lock);
+	while (1) {
+		count = axienet_recv(lp, budget - work_done);
+		if (count & 0xFFFFFFFF) {
+			napi_complete(napi);
+			//spin_unlock(&lp->rx_lock);
+			goto reset_hw;
+		}
+		work_done += count;
+		if (work_done >= budget)
+			break;
+
+		lp->rx_poll_not_enough++;
+
+		/* We disabled RX interrupts in interrupt service
+		 * routine, now it is time to enable it back.
+		 */
+
+		//turn off CPU IRQ receive before enable DMA interrupt signal
+		//local_irq_disable();
+
+		//enable DMA interrupt output signal of RX
+		//cr = axienet_dma_in32(lp, XAXIDMA_RX_CR_OFFSET);
+		//cr |= (XAXIDMA_IRQ_IOC_MASK | XAXIDMA_IRQ_DELAY_MASK);
+		//cr = dma_rx_cr_def | (XAXIDMA_IRQ_IOC_MASK | XAXIDMA_IRQ_DELAY_MASK);
+		//axienet_dma_out32(lp, XAXIDMA_RX_CR_OFFSET, cr);
+
+		/* If a packet has come in between the last check of the BD
+		 * list and unmasking the DMA interrupts, we may have missed the
+		 * interrupt, so reschedule here.
+		 */
+		status = axienet_dma_in32(lp, XAXIDMA_RX_SR_OFFSET);
+		status &= (XAXIDMA_IRQ_IOC_MASK | XAXIDMA_IRQ_DELAY_MASK);
+		if (status && (lp->rx_bd_v[lp->rx_bd_ci].status & XAXIDMA_BD_STS_COMPLETE_MASK))
+		{
+			//axienet_dma_out32(lp, XAXIDMA_RX_CR_OFFSET, dma_rx_cr_def);
+			//local_irq_enable();
+			continue;
+		}
+
+		lp->rx_poll_exit++;
+
+		//complete NAPI poll method
+		napi_complete(napi);
+
+		//clear TX DMA IRQ to avoid trigger TX hard IRQ immediately after napi complete
+		axienet_dma_out32(lp, XAXIDMA_TX_SR_OFFSET, (XAXIDMA_IRQ_IOC_MASK | XAXIDMA_IRQ_DELAY_MASK));
+		
+		//before existing poll, enable interrupt output signal of TX
+		//cr = axienet_dma_in32(lp, XAXIDMA_TX_CR_OFFSET);
+		//cr |= (XAXIDMA_IRQ_IOC_MASK | XAXIDMA_IRQ_DELAY_MASK);
+		cr = lp->dma_rx_cr_def | (XAXIDMA_IRQ_IOC_MASK | XAXIDMA_IRQ_DELAY_MASK);
+		axienet_dma_out32(lp, XAXIDMA_RX_CR_OFFSET, cr);
+		cr = lp->dma_tx_cr_def | (XAXIDMA_IRQ_IOC_MASK | XAXIDMA_IRQ_DELAY_MASK);
+		axienet_dma_out32(lp, XAXIDMA_TX_CR_OFFSET, cr);
+
+		//turn on CPU IRQ receive 
+		//local_irq_enable();
+
+		break;
+	}
+	//spin_unlock(&lp->rx_lock);
+	return work_done;
+reset_hw:
+	tasklet_schedule(&lp->dma_err_tasklet);
+	return 0;
 }
 
 /**
@@ -854,15 +1136,39 @@ static irqreturn_t axienet_tx_irq(int irq, void *_ndev)
 	struct net_device *ndev = _ndev;
 	struct axienet_local *lp = netdev_priv(ndev);
 
+	lp->tx_irq_total++;
+
 	status = axienet_dma_in32(lp, XAXIDMA_TX_SR_OFFSET);
-	if (status & (XAXIDMA_IRQ_IOC_MASK | XAXIDMA_IRQ_DELAY_MASK)) {
+
+	if (status & (XAXIDMA_IRQ_IOC_MASK | XAXIDMA_IRQ_DELAY_MASK))
+	{
+		lp->tx_irq_valid++;
+
 		axienet_dma_out32(lp, XAXIDMA_TX_SR_OFFSET, status);
-		axienet_start_xmit_done(lp->ndev);
+		
+		//disable DMA interrupt output signal, include both Rx/Tx
+		//also disable delay time interrupt
+		//cr = axienet_dma_in32(lp, XAXIDMA_RX_CR_OFFSET);
+		//cr &= ~(XAXIDMA_IRQ_IOC_MASK | XAXIDMA_IRQ_DELAY_MASK);
+		axienet_dma_out32(lp, XAXIDMA_RX_CR_OFFSET, lp->dma_rx_cr_def);
+
+		//cr = axienet_dma_in32(lp, XAXIDMA_TX_CR_OFFSET);
+		//cr &= ~(XAXIDMA_IRQ_IOC_MASK | XAXIDMA_IRQ_DELAY_MASK);
+		axienet_dma_out32(lp, XAXIDMA_TX_CR_OFFSET, lp->dma_tx_cr_def);
+
+		//trigger NET_RX_SOFTIRQ for poll function to release completion TX Ring Buffer
+		napi_schedule(&lp->napi);
+			
+		//axienet_start_xmit_done(lp->ndev);
 		goto out;
 	}
 	if (!(status & XAXIDMA_IRQ_ALL_MASK))
-		dev_err(&ndev->dev, "No interrupts asserted in Tx path");
-	if (status & XAXIDMA_IRQ_ERROR_MASK) {
+	{
+		//dev_err(&ndev->dev, "No interrupts asserted in Tx path");
+		lp->tx_irq_false++;
+	}
+	if (status & XAXIDMA_IRQ_ERROR_MASK)
+	{
 		dev_err(&ndev->dev, "DMA Tx error 0x%x\n", status);
 		dev_err(&ndev->dev, "Current BD is at: 0x%x\n",
 			(lp->tx_bd_v[lp->tx_bd_ci]).phys);
@@ -903,15 +1209,38 @@ static irqreturn_t axienet_rx_irq(int irq, void *_ndev)
 	struct net_device *ndev = _ndev;
 	struct axienet_local *lp = netdev_priv(ndev);
 
+	lp->rx_irq_total++;
+
 	status = axienet_dma_in32(lp, XAXIDMA_RX_SR_OFFSET);
-	if (status & (XAXIDMA_IRQ_IOC_MASK | XAXIDMA_IRQ_DELAY_MASK)) {
+
+	if (status & (XAXIDMA_IRQ_IOC_MASK | XAXIDMA_IRQ_DELAY_MASK))
+	{
+		lp->rx_irq_valid++;
 		axienet_dma_out32(lp, XAXIDMA_RX_SR_OFFSET, status);
-		axienet_recv(lp->ndev);
+		
+		//disable DMA interrupt signal output, include both Rx/Tx
+		//also disable delay interrupt interrupt function
+		//cr = axienet_dma_in32(lp, XAXIDMA_RX_CR_OFFSET);
+		//cr &= ~(XAXIDMA_IRQ_IOC_MASK | XAXIDMA_IRQ_DELAY_MASK);
+		axienet_dma_out32(lp, XAXIDMA_RX_CR_OFFSET, lp->dma_rx_cr_def);
+
+		//cr = axienet_dma_in32(lp, XAXIDMA_TX_CR_OFFSET);
+		//cr &= ~(XAXIDMA_IRQ_IOC_MASK | XAXIDMA_IRQ_DELAY_MASK);
+		axienet_dma_out32(lp, XAXIDMA_TX_CR_OFFSET, lp->dma_tx_cr_def);
+
+		//trigger NET_RX_SOFTIRQ for packet receiving
+		napi_schedule(&lp->napi);
+
+		//axienet_recv(lp->ndev);
 		goto out;
 	}
 	if (!(status & XAXIDMA_IRQ_ALL_MASK))
-		dev_err(&ndev->dev, "No interrupts asserted in Rx path");
-	if (status & XAXIDMA_IRQ_ERROR_MASK) {
+	{
+		//dev_err(&ndev->dev, "No interrupts asserted in Rx path");
+		lp->rx_irq_false++;
+	}
+	if (status & XAXIDMA_IRQ_ERROR_MASK)
+	{
 		dev_err(&ndev->dev, "DMA Rx error 0x%x\n", status);
 		dev_err(&ndev->dev, "Current BD is at: 0x%x\n",
 			(lp->rx_bd_v[lp->rx_bd_ci]).phys);
@@ -983,8 +1312,110 @@ static void poll_gmii(unsigned long data)
 }
 //-------------------------
 
-
 static void axienet_dma_err_handler(unsigned long data);
+
+struct proc_dir_entry *axienet_proc_dir = NULL;
+
+static int axienet_proc_irq(struct seq_file *file, void *data_not_used)
+{
+	struct axienet_local *lp = (struct axienet_local *)file->private;
+
+	if(lp == NULL)
+	{
+		seq_printf(file, "no valid adapter\n");
+		return 0;
+	}
+
+	seq_printf(file, "total tx irq:		%d\n", lp->tx_irq_total);
+	seq_printf(file, "valid tx irq:		%d\n", lp->tx_irq_valid);
+	seq_printf(file, "false tx irq:		%d\n", lp->tx_irq_false);
+
+	seq_printf(file, "===============================\n");
+
+	seq_printf(file, "total rx irq:		%d\n", lp->rx_irq_total);
+	seq_printf(file, "valid rx irq:		%d\n", lp->rx_irq_valid);
+	seq_printf(file, "false rx irq:		%d\n", lp->rx_irq_false);
+
+	seq_printf(file, "===============================\n");
+
+	seq_printf(file, "total rx poll		%d\n", lp->rx_poll_total);
+	seq_printf(file, "total rx not enough packets		%d\n", lp->rx_poll_not_enough);
+	seq_printf(file, "total rx poll exit		%d\n", lp->rx_poll_exit);
+
+	return 0;
+}
+
+static int axienet_proc_open(struct inode *inode, struct file *file)
+{
+	//using PDE_DATA, we can pass struct axienet_local pointer to file struct
+	return single_open(file, axienet_proc_irq, PDE_DATA(inode));
+}
+
+static const struct file_operations axienet_proc_fops = {
+	.owner = THIS_MODULE,
+	.open = axienet_proc_open,
+	.read = seq_read,
+	.llseek = seq_lseek,
+	.release = single_release,
+	//.read = axienet_proc_irq,
+};
+
+static void axienet_proc_init(struct axienet_local *lp)
+{
+	if(!axienet_proc_dir)
+		axienet_proc_dir = proc_mkdir("axienet", init_net.proc_net);
+
+	if(axienet_proc_dir != NULL){
+		lp->axienet_proc_dev_dir = proc_mkdir(lp->ndev->name, axienet_proc_dir);
+
+		if (lp->axienet_proc_dev_dir != NULL)
+		{
+			lp->axienet_proc_stat_dir = proc_mkdir("stat", lp->axienet_proc_dev_dir);
+
+			lp->axienet_proc_stat_intr = proc_create_data("intr",			/* name */ 
+														   0444,			/* read-only */
+														   lp->axienet_proc_stat_dir,	/* parent */
+														   &axienet_proc_fops,	/* cat function */
+														   lp					/* axienet_local struct */
+														 );
+			if(lp->axienet_proc_stat_intr == NULL)
+				printk(KERN_ERR "[AXIENET Drv] unable to register proc file\n");
+
+			printk(KERN_ERR "[AXIENET Drv] registered /proc/net/axienet/%s/stat/intr\n", lp->ndev->name);
+		}
+		else
+			printk(KERN_ERR "[AXIENET Drv] unable to create /proc/net/axinet/%s\n", lp->ndev->name);
+	}
+	else
+		printk(KERN_ERR "[AXIENET Drv] unable to create /proc/net/axinet\n");
+}
+
+static void axienet_proc_remove(struct axienet_local *lp)
+{
+	if(lp->axienet_proc_stat_intr != NULL)
+	{
+		printk(KERN_ERR "[AXIENET Drv] Removing /proc/net/axienet/stat/intr\n");
+		remove_proc_entry("intr", lp->axienet_proc_stat_dir);
+
+		if(lp->axienet_proc_stat_dir != NULL)
+		{
+			printk(KERN_ERR "[AXIENET Drv] Removing /proc/net/axienet/stat\n");
+			remove_proc_entry("stat", lp->axienet_proc_stat_dir);
+
+			if(lp->axienet_proc_dev_dir != NULL)
+			{
+				printk(KERN_ERR "[AXIENET Drv] Removing /proc/net/axienet/dev_name\n");
+				remove_proc_entry(lp->ndev->name, lp->axienet_proc_dev_dir);
+
+				if(axienet_proc_dir != NULL)
+				{
+					remove_proc_entry("axienet", init_net.proc_net);
+					axienet_proc_dir = NULL;
+				}
+			}
+		}
+	}
+}
 
 /**
  * axienet_open - Driver open routine.
@@ -1060,6 +1491,20 @@ static int axienet_open(struct net_device *ndev)
 	if (ret)
 		goto err_rx_irq;
 
+	lp->tx_irq_total = 0;
+	lp->tx_irq_valid = 0;
+	lp->tx_irq_false = 0;
+
+	lp->rx_irq_total = 0;
+	lp->rx_irq_valid = 0;
+	lp->rx_irq_false = 0;
+
+	lp->rx_poll_total = 0;
+	lp->rx_poll_not_enough = 0;
+	lp->rx_poll_exit = 0;
+
+	napi_enable(&lp->napi);
+
 //XAPP1082
 //-------------
   /* Start TEMAC device */
@@ -1081,8 +1526,8 @@ static int axienet_open(struct net_device *ndev)
   spin_lock_init(&receivedQueueSpin);
 //-------------
 
-
-	return 0;
+  axienet_proc_init(lp);
+  return 0;
 
 err_rx_irq:
 	free_irq(lp->tx_irq, ndev);
@@ -1132,12 +1577,120 @@ static int axienet_stop(struct net_device *ndev)
 	lp->phy_dev = NULL;
 //XAPP1082
   netif_stop_queue(ndev);
+  napi_disable(&lp->napi);
   del_timer_sync(&lp->phy_timer);
   netif_carrier_off(ndev);
 
 	axienet_dma_bd_release(ndev);
+
+	lp->tx_irq_total = 0;
+	lp->tx_irq_valid = 0;
+	lp->tx_irq_false = 0;
+
+	lp->rx_irq_total = 0;
+	lp->rx_irq_valid = 0;
+	lp->rx_irq_false = 0;
+
+	lp->rx_poll_total = 0;
+	lp->rx_poll_not_enough = 0;
+	lp->rx_poll_exit = 0;
+
+	lp->axienet_proc_dev_dir = NULL;
+	lp->axienet_proc_stat_dir = NULL;
+	lp->axienet_proc_stat_intr = NULL;
+
+	axienet_proc_remove(lp);
 	return 0;
 }
+
+/**
+ * axienet_get_stats - get device statistic raw data in 64bit mode
+ * @ndev: network device
+ * Return: Pointer to network device statistic
+ */
+/*static struct net_device_stats
+*axienet_get_stats(struct net_device *ndev)
+{
+	struct net_device_stats *nstat = &ndev->stats;
+	struct axienet_local *lp = netdev_priv(ndev);
+	
+	u64 cnt;
+	u32 cnt_hw;
+
+	cnt_hw = axienet_ior(lp, XAE_RXUNDRU_OFFSET);
+	cnt = (u64)cnt_hw << 32;
+	cnt_hw = axienet_ior(lp, XAE_RXUNDRL_OFFSET);
+	cnt += cnt_hw;
+	nstat->rx_errors += cnt;
+	nstat->rx_length_errors += cnt;
+
+	cnt_hw = axienet_ior(lp, XAE_RXOVRU_OFFSET);
+	cnt = (u64)cnt_hw << 32;
+	cnt_hw = axienet_ior(lp, XAE_RXOVRL_OFFSET);
+	cnt += cnt_hw;
+	nstat->rx_errors += cnt;
+	nstat->rx_length_errors += cnt;
+
+	cnt_hw = axienet_ior(lp, XAE_RXFCSERU_OFFSET);
+	cnt = (u64)cnt_hw << 32;
+	cnt_hw = axienet_ior(lp, XAE_RXFCSERL_OFFSET);
+	cnt += cnt_hw;
+	nstat->rx_errors += cnt;
+	nstat->rx_crc_errors += cnt;
+
+	cnt_hw = axienet_ior(lp, XAE_RXFRAGU_OFFSET);
+	cnt = (u64)cnt_hw << 32;
+	cnt_hw = axienet_ior(lp, XAE_RXFRAGL_OFFSET);
+	cnt += cnt_hw;
+	nstat->rx_errors += cnt;
+	nstat->rx_crc_errors += cnt;
+
+	cnt_hw = axienet_ior(lp, XAE_RXLTERU_OFFSET);
+	cnt = (u64)cnt_hw << 32;
+	cnt_hw = axienet_ior(lp, XAE_RXLTERL_OFFSET);
+	cnt += cnt_hw;
+	nstat->rx_errors += cnt;
+	nstat->rx_length_errors += cnt;*/
+
+	/*cnt = axienet_ior(lp, XEMACPS_RXALIGNCNT_OFFSET);
+	nstat->rx_errors += cnt;
+	nstat->rx_frame_errors += cnt;
+
+	cnt = axienet_ior(lp, XEMACPS_RXRESERRCNT_OFFSET);
+	nstat->rx_errors += cnt;
+	nstat->rx_missed_errors += cnt;
+
+	cnt = axienet_ior(lp, XEMACPS_RXORCNT_OFFSET);
+	nstat->rx_errors += cnt;
+	nstat->rx_fifo_errors += cnt;*/
+
+	/*cnt = axienet_ior(lp, XEMACPS_TXURUNCNT_OFFSET);
+	nstat->tx_errors += cnt;
+	nstat->tx_fifo_errors += cnt;
+
+	cnt = axienet_ior(lp, XEMACPS_SNGLCOLLCNT_OFFSET);
+	nstat->collisions += cnt;
+
+	cnt = axienet_ior(lp, XEMACPS_MULTICOLLCNT_OFFSET);
+	nstat->collisions += cnt;
+
+	cnt = axienet_ior(lp, XEMACPS_EXCESSCOLLCNT_OFFSET);
+	nstat->tx_errors += cnt;
+	nstat->tx_aborted_errors += cnt;
+	nstat->collisions += cnt;
+
+	cnt = axienet_ior(lp, XEMACPS_LATECOLLCNT_OFFSET);
+	nstat->tx_errors += cnt;
+	nstat->collisions += cnt;
+
+	cnt = axienet_ior(lp, XEMACPS_CSENSECNT_OFFSET);
+	nstat->tx_errors += cnt;
+	nstat->tx_carrier_errors += cnt;*/
+	
+	//axienet_update_stats(ndev);
+	//return nstat;
+//}
+
 
 /**
  * axienet_change_mtu - Driver change mtu routine.
@@ -1215,6 +1768,7 @@ static const struct net_device_ops axienet_netdev_ops = {
 #ifdef CONFIG_NET_POLL_CONTROLLER
 	.ndo_poll_controller = axienet_poll_controller,
 #endif
+	//.ndo_get_stats = axienet_get_stats,
 };
 
 /**
@@ -1565,7 +2119,9 @@ static void axienet_dma_err_handler(unsigned long data)
 
 	lp->tx_bd_ci = 0;
 	lp->tx_bd_tail = 0;
+
 	lp->rx_bd_ci = 0;
+	lp->rx_bd_ui = 0;
 
 	/* Start updating the Rx channel control register */
 	cr = axienet_dma_in32(lp, XAXIDMA_RX_CR_OFFSET);
@@ -1631,6 +2187,7 @@ static void axienet_dma_err_handler(unsigned long data)
 	axienet_setoptions(ndev, lp->options);
 }
 
+
 /**
  * axienet_probe - Axi Ethernet probe function.
  * @pdev:		Pointer to platform device structure.
@@ -1681,6 +2238,9 @@ static int axienet_probe(struct platform_device *pdev)
 
 	/* Setup checksum offload, but default to off if not specified */
 	lp->features = 0;
+
+	spin_lock_init(&lp->rx_lock);
+	spin_lock_init(&lp->tx_lock);
 
 	ret = of_property_read_u32(pdev->dev.of_node, "xlnx,txcsum", &value);
 	if (!ret) {
@@ -1791,11 +2351,29 @@ static int axienet_probe(struct platform_device *pdev)
 			dev_warn(&pdev->dev, "error registering MDIO bus\n");
 	}
 
+	netif_napi_add(ndev, &lp->napi, axienet_rx_poll, AXIENET_NAPI_WEIGHT);
+
+	//strncpy(lp->ndev->name, "eth%d", IFNAMSIZ);
+
 	ret = register_netdev(lp->ndev);
 	if (ret) {
 		dev_err(lp->dev, "register_netdev() error (%i)\n", ret);
 		goto free_netdev;
 	}
+
+	//axienet_proc_init(lp->ndev->name);
+	
+	lp->tx_irq_total = 0;
+	lp->tx_irq_valid = 0;
+	lp->tx_irq_false = 0;
+
+	lp->rx_irq_total = 0;
+	lp->rx_irq_valid = 0;
+	lp->rx_irq_false = 0;
+
+	lp->rx_poll_total = 0;
+	lp->rx_poll_not_enough = 0;
+	lp->rx_poll_exit = 0;
 
 	return 0;
 
@@ -1818,6 +2396,22 @@ static int axienet_remove(struct platform_device *pdev)
 	lp->phy_node = NULL;
 
 	free_netdev(ndev);
+
+	lp->tx_irq_total = 0;
+	lp->tx_irq_valid = 0;
+	lp->tx_irq_false = 0;
+
+	lp->rx_irq_total = 0;
+	lp->rx_irq_valid = 0;
+	lp->rx_irq_false = 0;
+
+	lp->rx_poll_total = 0;
+	lp->rx_poll_not_enough = 0;
+	lp->rx_poll_exit = 0;
+
+	lp->axienet_proc_dev_dir = NULL;
+	lp->axienet_proc_stat_dir = NULL;
+	lp->axienet_proc_stat_intr = NULL;
 
 	return 0;
 }
