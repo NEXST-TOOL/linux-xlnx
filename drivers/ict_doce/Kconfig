@@ -1,0 +1,24 @@
+#
+# ICT DoCE device configuration
+#
+
+config DOCE
+	bool "DoCE device driver"
+	default y
+	depends on ARCH_ZYNQ
+	---help---
+	  If you want to use ICT DoCE device driver, say Y
+
+if DOCE
+
+config ICT_DOCE
+	tristate "ICT custom DoCE design"
+	default m
+	depends on ARCH_ZYNQ
+	---help---
+	  DoCE (Direct Extension of On-Chip Interconnect over Converged Ethernet) 
+	  custom device driver.
+	  Developed by FPGA accelerator team, ACS, ICT 
+	  (changyisong@ict.ac.cn)
+
+endif # DOCE
