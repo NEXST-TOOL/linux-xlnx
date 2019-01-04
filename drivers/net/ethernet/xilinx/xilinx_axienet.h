@@ -165,8 +165,10 @@
 					    * register offset */
 #define XAE_MDIO_MIC_OFFSET	0x00000660 /* MII Management Interrupt Clear
 					    * register offset. */
-#define XAE_UAW0_OFFSET		0x00000700 /* Unicast address word 0 */
-#define XAE_UAW1_OFFSET		0x00000704 /* Unicast address word 1 */
+//#define XAE_UAW0_OFFSET		0x00000700 /* Unicast address word 0 */
+//#define XAE_UAW1_OFFSET		0x00000704 /* Unicast address word 1 */
+#define XAE_UAW0_OFFSET		0x00000008 /* Unicast address word 0 */
+#define XAE_UAW1_OFFSET		0x0000000C /* Unicast address word 1 */
 #define XAE_FMI_OFFSET		0x00000708 /* Filter Mask Index */
 #define XAE_AF0_OFFSET		0x00000710 /* Address Filter 0 */
 #define XAE_AF1_OFFSET		0x00000714 /* Address Filter 1 */
@@ -463,6 +465,7 @@ struct axienet_local {
 
 	u32 coalesce_count_rx;
 	u32 coalesce_count_tx;
+	struct gpio_desc *gpio_rst;
 };
 
 /**
