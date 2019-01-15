@@ -638,9 +638,14 @@ pgprot_t phys_mem_access_prot(struct file *file, unsigned long pfn,
 
 	if (!pfn_valid(pfn))
 	{
-		//if mmap calling for remote memory, keeping cacheable
-		//remote memory region: 0x8000_0000 - 0xBFFF_FFFF
-		if ( (pfn >= 0x80000) && (pfn <= 0xBFFFF) )
+		/* if mmap calling for local PL memory and remote memory
+		 * keeping cacheable attribute
+		 * local PL memory region: 0x4000_0000 - 0x5FFF_FFFF
+		 * remote memory region: 0x8000_0000 - 0xBFFF_FFFF
+		 * Please make sure MMIO register space (0x6000_0000 - 0x7FFF_FFFF)
+		 * would be not mapped in user space via mmap()
+		 */
+		if ( (pfn >= 0x40000) && (pfn <= 0xBFFFF) )
 			return vma_prot;
 		else
 			return pgprot_noncached(vma_prot);
