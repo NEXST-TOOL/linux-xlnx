@@ -1,35 +1,56 @@
 * Xilinx XDMA PL PCIe Root Port Bridge DT description
 
 Required properties:
-- #address-cells: Address representation for root ports, set to <3>
-- #size-cells: Size representation for root ports, set to <2>
-- #interrupt-cells: specifies the number of cells needed to encode an
-	interrupt source. The value must be 1.
 - compatible: Should contain "xlnx,xdma-host-3.00"
-- reg: Should contain XDMA PCIe registers location and length
 - device_type: must be "pci"
-- interrupts: Should contain AXI PCIe interrupt
-- interrupt-map-mask,
-  interrupt-map: standard PCI properties to define the mapping of the
-	PCI interface to interrupt numbers.
+- reg: Should contain registers location and length of each XDMA PCIe root port
+  64-bit address and 64-bit size
+- reg-names: Names of the above areas to use during resource lookup
+  Each root port would be named as "rpX", where X indicates ID of a root port.
+- #address-cells: Address representation for root ports, set to <3>
+  represents 3 cells in ranges
+- #size-cells: Size representation for root ports, set to <2>
+  represents 2 cells in ranges
 - ranges: ranges for the PCI memory regions (I/O space region is not
 	supported by hardware)
 	Please refer to the standard PCI bus binding document for a more
 	detailed explanation
-
-For MSI DECODE mode:
-- interrupt-names: Must include the following entries:
-	"misc": interrupt asserted when legacy or error interrupt is received
-	"msi1, msi0": interrupt asserted when an MSI is received
-
-Interrupt controller child node
-+++++++++++++++++++++++++++++++
-Required properties:
-- interrupt-controller: identifies the node as an interrupt controller
-- #address-cells: specifies the number of cells needed to encode an
-	address. The value must be 0.
+- bus-range: (Optional) PCI bus numbers covered
 - #interrupt-cells: specifies the number of cells needed to encode an
 	interrupt source. The value must be 1.
+- interrupts: Should contain AXI PCIe interrupt of each root port
+
+For MSI DECODE mode:
+there would be three entries for each port under interrupts node
+entry #0: misc
+entry #1: msi0
+entry #2: msi1
+The number of total entries is #(root port) * 3
+
+PCIe Root Port child node
++++++++++++++++++++++++++++++++
+Required properties:
+- device_type: Must be "pci"
+- reg: Only the first four bytes are used to refer to the correct bus number 
+	and device number.
+- #address-cells: Must be 3 (taking effect in ranges)
+- #size-cells: Must be 2 (taking effect in ranges)
+- ranges: Sub-ranges distributed from the PCIe controller node. 
+	An empty property is sufficient.
+- #interrupt-cells: specifies the number of cells needed to encode an
+	interrupt source. The value must be 1.
+- interrupt-map-mask and interrupt-map: Standard PCI IRQ mapping properties. 
+	Please refer to the standard PCI bus binding document for a more 
+	detailed explanation.
+- num-lanes: Number of lanes to use for this port
+- sub node: A list of interrupt outputs of the controller, must have one entry 
+	for each PCIe port
+    Required properties:
+    - interrupt-controller: identifies the node as an interrupt controller
+	- #address-cells: specifies the number of cells needed to encode an
+		address. The value must be 0.
+	- #interrupt-cells: specifies the number of cells needed to encode an
+		interrupt source. The value must be 1.
 
 NOTE:
 The core provides a single interrupt for both INTx/MSI messages. So,
@@ -41,47 +62,161 @@ the four INTx interrupts in ISR and route them to this domain.
 Example:
 ++++++++
 MSI FIFO mode:
-	xdma_0: axi-pcie@a0000000 {
-		#address-cells = <3>;
-		#interrupt-cells = <1>;
-		#size-cells = <2>;
+	xdma_0: axi-pcie@80000000 {
 		compatible = "xlnx,xdma-host-3.00";
 		device_type = "pci";
-		interrupt-map = <0 0 0 1 &pcie_intc_0 1>,
-				<0 0 0 2 &pcie_intc_0 2>,
-				<0 0 0 3 &pcie_intc_0 3>,
-				<0 0 0 4 &pcie_intc_0 4>;
-		interrupt-map-mask = <0 0 0 7>;
-		interrupt-parent = <&gic>;
-		interrupts = <0 89 4>;
-		ranges = <0x02000000 0x00000000 0xB0000000 0x0 0xB0000000 0x00000000 0x01000000>,
-			<0x43000000 0x00000005 0x00000000 0x00000005 0x00000000 0x00000000 0x01000000>;
-		reg = <0x0 0xA0000000 0x0 0x10000000>;
-		pcie_intc_0: interrupt-controller {
-			#address-cells = <0>;
+		reg = <0x0 0x80000000 0x0 0x800000>, /*Root port 0*/
+        <0x0 0x80800000 0x0 0x800000>, /*Root port 1*/
+        <0x0 0x81000000 0x0 0x800000>; /*Root port 2*/
+    reg-names = "rp0", "rp1", "rp2";
+		#address-cells = <3>;
+		#size-cells = <2>;
+		ranges = <0x02000000 0x0 0xA0000000 0x0 0xA0000000 0x0 0x300000>;
+		#interrupt-cells = <1>;
+		interrupts = <0 52 4>,
+               <0 53 4>,
+               <0 54 4>;
+    interrupt-parent = <&gic>;
+
+		pcie0: pcie@0,0 {
+			device_type = "pci";
+			reg = <0x0000 0 0 0 0>;
+			#address-cells = <3>;
+			#size-cells = <2>;
+			ranges;
 			#interrupt-cells = <1>;
-			interrupt-controller ;
+			interrupt-map-mask = <0 0 0 7>;
+			interrupt-map = <0 0 0 1 &pcie_intc0 1>,
+				<0 0 0 2 &pcie_intc0 2>,
+				<0 0 0 3 &pcie_intc0 3>,
+				<0 0 0 4 &pcie_intc0 4>;
+			pcie_intc0: interrupt-controller {
+				interrupt-controller;
+				#address-cells = <0>;
+				#interrupt-cells = <1>;
+			};
+		};
+
+		pcie1: pcie@1,0 {
+			device_type = "pci";
+			reg = <0x0800 0 0 0 0>;
+			#address-cells = <3>;
+			#size-cells = <2>;
+			ranges;
+			#interrupt-cells = <1>;
+			interrupt-map-mask = <0 0 0 7>;
+			interrupt-map = <0 0 0 1 &pcie_intc1 1>,
+				<0 0 0 2 &pcie_intc1 2>,
+				<0 0 0 3 &pcie_intc1 3>,
+				<0 0 0 4 &pcie_intc1 4>;
+
+			pcie_intc1: interrupt-controller {
+				interrupt-controller;
+				#address-cells = <0>;
+				#interrupt-cells = <1>;
+			};
+		};
+
+		pcie2: pcie@2,0 {
+			device_type = "pci";
+			reg = <0x1000 0 0 0 0>;
+			#address-cells = <3>;
+			#size-cells = <2>;
+			ranges;
+			#interrupt-cells = <1>;
+			interrupt-map-mask = <0 0 0 7>;
+			interrupt-map = <0 0 0 1 &pcie_intc2 1>,
+				<0 0 0 2 &pcie_intc2 2>,
+				<0 0 0 3 &pcie_intc2 3>,
+				<0 0 0 4 &pcie_intc2 4>;
+
+			pcie_intc2: interrupt-controller {
+				interrupt-controller;
+				#address-cells = <0>;
+				#interrupt-cells = <1>;
+			};
 		};
 	};
 
 MSI DECODE mode:
-	xdma_0: axi-pcie@a0000000 {
-		#address-cells = <3>;
-		#interrupt-cells = <1>;
-		#size-cells = <2>;
+	xdma_0: axi-pcie@80000000 {
 		compatible = "xlnx,xdma-host-3.00";
 		device_type = "pci";
-		interrupt-map = <0 0 0 1 &pcie_intc_0 1>, <0 0 0 2 &pcie_intc_0 2>, <0 0 0 3 &pcie_intc_0 3>, <0 0 0 4 &pcie_intc_0 4>;
-		interrupt-map-mask = <0 0 0 7>;
-		interrupt-parent = <&gic>;
-		interrupt-names = "misc", "msi0", "msi1";
-		interrupts = <0 89 4>, <0 90 4>, <0 91 4>;
-		ranges = <0x02000000 0x00000000 0xB0000000 0x0 0xB0000000 0x00000000 0x01000000>,
-			<0x43000000 0x00000005 0x00000000 0x00000005 0x00000000 0x00000000 0x01000000>;
-		reg = <0x0 0xA0000000 0x0 0x10000000>;
-		pcie_intc_0: interrupt-controller {
-			#address-cells = <0>;
+		reg = <0x0 0x80000000 0x0 0x800000>, /*Root port 0*/
+        <0x0 0x80800000 0x0 0x800000>, /*Root port 1*/
+        <0x0 0x81000000 0x0 0x800000>; /*Root port 2*/
+    reg-names = "rp0", "rp1", "rp2";
+		#address-cells = <3>;
+		#size-cells = <2>;
+		ranges = <0x02000000 0x0 0xA0000000 0x0 0xA0000000 0x0 0x300000>;
+		#interrupt-cells = <1>;
+		interrupts = <0 52 4>,
+               <0 53 4>,
+               <0 54 4>,
+               <0 55 4>,
+               <0 56 4>,
+               <0 57 4>,
+               <0 58 4>,
+               <0 59 4>,
+               <0 60 4>,
+    interrupt-parent = <&gic>;
+
+		pcie0: pcie@0,0 {
+			device_type = "pci";
+			reg = <0x0000 0 0 0 0>;
+			#address-cells = <3>;
+			#size-cells = <2>;
+			ranges;
 			#interrupt-cells = <1>;
-			interrupt-controller ;
+			interrupt-map-mask = <0 0 0 7>;
+			interrupt-map = <0 0 0 1 &pcie_intc0 1>,
+				<0 0 0 2 &pcie_intc0 2>,
+				<0 0 0 3 &pcie_intc0 3>,
+				<0 0 0 4 &pcie_intc0 4>;
+			pcie_intc0: interrupt-controller {
+				interrupt-controller;
+				#address-cells = <0>;
+				#interrupt-cells = <1>;
+			};
+		};
+
+		pcie1: pcie@1,0 {
+			device_type = "pci";
+			reg = <0x0800 0 0 0 0>;
+			#address-cells = <3>;
+			#size-cells = <2>;
+			ranges;
+			#interrupt-cells = <1>;
+			interrupt-map-mask = <0 0 0 7>;
+			interrupt-map = <0 0 0 1 &pcie_intc1 1>,
+				<0 0 0 2 &pcie_intc1 2>,
+				<0 0 0 3 &pcie_intc1 3>,
+				<0 0 0 4 &pcie_intc1 4>;
+
+			pcie_intc1: interrupt-controller {
+				interrupt-controller;
+				#address-cells = <0>;
+				#interrupt-cells = <1>;
+			};
+		};
+
+		pcie2: pcie@2,0 {
+			device_type = "pci";
+			reg = <0x1000 0 0 0 0>;
+			#address-cells = <3>;
+			#size-cells = <2>;
+			ranges;
+			#interrupt-cells = <1>;
+			interrupt-map-mask = <0 0 0 7>;
+			interrupt-map = <0 0 0 1 &pcie_intc2 1>,
+				<0 0 0 2 &pcie_intc2 2>,
+				<0 0 0 3 &pcie_intc2 3>,
+				<0 0 0 4 &pcie_intc2 4>;
+
+			pcie_intc2: interrupt-controller {
+				interrupt-controller;
+				#address-cells = <0>;
+				#interrupt-cells = <1>;
+			};
 		};
 	};

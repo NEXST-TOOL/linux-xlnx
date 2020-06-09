@@ -21,6 +21,7 @@
 #include <linux/pci.h>
 #include <linux/platform_device.h>
 #include <linux/irqchip/chained_irq.h>
+#include "../pci.h"
 
 /* Register definitions */
 #define XILINX_PCIE_REG_VSEC		0x0000012c
@@ -107,38 +108,67 @@ enum msi_mode {
 	MSI_FIFO_MODE,
 };
 
+enum msi_decd_mode_order {
+  REQ_DECD_MISC = 0,
+  REQ_DECD_MSI0,
+  REQ_DECD_MSI1,
+  REQ_DECD_TOTAL,
+};
+
 struct xilinx_msi {
 	struct irq_domain *msi_domain;
-	unsigned long *bitmap;
 	struct irq_domain *dev_domain;
+	unsigned long *bitmap;
 	struct mutex lock;		/* protect bitmap variable */
 	unsigned long msi_pages;
-	int irq_msi0;
-	int irq_msi1;
 };
 
 /**
  * struct xilinx_pcie_port - PCIe port information
  * @reg_base: IO Mapped Register Base
+ * @list: port list
+ * @pcie: pointer to PCIe host info
  * @irq: Interrupt number
- * @root_busno: Root Bus number
+ * @slot: Root Port number
  * @dev: Device pointer
  * @leg_domain: Legacy IRQ domain pointer
- * @resources: Bus Resources
  * @msi: MSI information
- * @irq_misc: Legacy and error interrupt number
  * @msi_mode: MSI mode
  */
 struct xilinx_pcie_port {
 	void __iomem *reg_base;
+  struct list_head list;
+	struct xilinx_pcie *pcie;
 	u32 irq;
-	u8 root_busno;
+	u32 slot;
 	struct device *dev;
 	struct irq_domain *leg_domain;
-	struct list_head resources;
 	struct xilinx_msi msi;
-	int irq_misc;
 	u8 msi_mode;
+};
+
+/**
+ * struct xilinx_pcie - PCIe host (Root Complex) information
+ * @dev: pointer to PCIe device
+ * @io: IO resource
+ * @pio: PIO resource
+ * @mem: non-prefetchable memory resource
+ * @busn: bus range
+ * @offset: IO / Memory offset
+ * @ports: pointer to PCIe port information
+ * @res: pointer to I/O, memory and bus resources
+ */
+struct xilinx_pcie {
+	struct device *dev;
+	struct resource io;
+	struct resource pio;
+	struct resource mem;
+	struct resource busn;
+	struct {
+		resource_size_t mem;
+		resource_size_t io;
+	} offset;
+	struct list_head ports;
 };
 
 static inline u32 pcie_read(struct xilinx_pcie_port *port, u32 reg)
@@ -173,74 +203,116 @@ static void xilinx_pcie_clear_err_interrupts(struct xilinx_pcie_port *port)
 	}
 }
 
-/**
- * xilinx_pcie_valid_device - Check if a valid device is present on bus
- * @bus: PCI Bus structure
- * @devfn: device/function
- *
- * Return: 'true' on success and 'false' if invalid device is found
- */
-static bool xilinx_pcie_valid_device(struct pci_bus *bus, unsigned int devfn)
+static struct xilinx_pcie_port *xilinx_pcie_find_port(struct pci_bus *bus,
+						unsigned int devfn)
 {
-	struct xilinx_pcie_port *port = bus->sysdata;
+	struct xilinx_pcie *pcie = bus->sysdata;
+	struct xilinx_pcie_port *port;
 
-	/* Check if link is up when trying to access downstream ports */
-	if (bus->number != port->root_busno)
-		if (!xilinx_pcie_link_is_up(port))
-			return false;
+	struct pci_bus *parent_bus;
+	struct pci_dev *parent_bridge, *bridge = NULL;
 
-	/* Only one device down on each root port */
-	if (bus->number == port->root_busno && devfn > 0)
-		return false;
+	//traverse PCI tree first to determine which root port this device locates on
+	parent_bridge = bus->self;
+	while (parent_bridge != NULL)
+	{
+		parent_bus = parent_bridge->bus;
+		bridge = parent_bridge;
+		parent_bridge = parent_bus->self;
+	}
+	//bridge equals to NULL means current bus is root bus
+	devfn = (bridge == NULL) ? devfn : (bridge->devfn);
 
-	return true;
+	list_for_each_entry(port, &pcie->ports, list)
+		if (port->slot == PCI_SLOT(devfn))
+			return port;
+
+	return NULL;
 }
 
 /**
- * xilinx_pcie_map_bus - Get configuration base
+ * xilinx_pcie_config_read - PCI RP/EP read operation
  * @bus: PCI Bus structure
- * @devfn: Device/function
- * @where: Offset from base
+ * @devfn: device/function
+ * @where: address offset
+ * @size: read size (might be 8-bit byte, 16-bit shord word, 32-bit long word and 64-bit quad word)
+ * @val: read out result
  *
- * Return: Base address of the configuration space needed to be
- *	   accessed.
+ * Return: 'true' on success and 'false' if invalid device is found
  */
-static void __iomem *xilinx_pcie_map_bus(struct pci_bus *bus,
-					 unsigned int devfn, int where)
+static int xilinx_pcie_config_read(struct pci_bus *bus, unsigned int devfn,
+				int where, int size, u32 *val)
 {
-	struct xilinx_pcie_port *port = bus->sysdata;
+	struct xilinx_pcie_port *port;
+
 	int relbus;
 
-	if (!xilinx_pcie_valid_device(bus, devfn))
-		return NULL;
+	void __iomem* addr;
 
-	relbus = (bus->number << ECAM_BUS_NUM_SHIFT) |
-		 (devfn << ECAM_DEV_NUM_SHIFT);
+	port = xilinx_pcie_find_port(bus, devfn);
+	if (!port) {
+		*val = ~0;
+		return PCIBIOS_DEVICE_NOT_FOUND;
+	}
 
-	return port->reg_base + relbus + where;
+	relbus = (bus->number << ECAM_BUS_NUM_SHIFT) | 
+			((bus->number ? devfn : 0) << ECAM_DEV_NUM_SHIFT);
+
+	addr = port->reg_base + relbus + where;
+
+	if (size == 1)
+		*val = readb(addr);
+	else if (size == 2)
+		*val = readw(addr);
+	else
+		*val = readl(addr);
+
+	return PCIBIOS_SUCCESSFUL;
+}
+
+/* xilinx_pcie_config_write - PCI RP/EP write operation
+ * @bus: PCI Bus structure
+ * @devfn: device/function
+ * @where: address offset
+ * @size: write size (might be 8-bit byte, 16-bit shord word, 32-bit long word and 64-bit quad word)
+ * @val: write data
+ *
+ * Return: 'true' on success and 'false' if invalid device is found
+ */
+static int xilinx_pcie_config_write(struct pci_bus *bus, unsigned int devfn,
+				 int where, int size, u32 val)
+{
+	struct xilinx_pcie_port *port;
+	int relbus;
+
+	void __iomem* addr;
+
+	port = xilinx_pcie_find_port(bus, devfn);
+	if (!port)
+		return PCIBIOS_DEVICE_NOT_FOUND;
+
+	relbus = (bus->number << ECAM_BUS_NUM_SHIFT) | 
+			((bus->number ? devfn : 0) << ECAM_DEV_NUM_SHIFT);
+
+	addr = port->reg_base + relbus + where;
+
+	if (size == 1)
+		writeb(val, addr);
+	else if (size == 2)
+		writew(val, addr);
+	else
+		writel(val, addr);
+
+	return PCIBIOS_SUCCESSFUL;
 }
 
 /* PCIe operations */
 static struct pci_ops xilinx_pcie_ops = {
-	.map_bus = xilinx_pcie_map_bus,
-	.read	= pci_generic_config_read,
-	.write	= pci_generic_config_write,
+	.read	= xilinx_pcie_config_read,
+	.write	= xilinx_pcie_config_write,
 };
 
-/**
- * xilinx_pcie_enable_msi - Enable MSI support
- * @port: PCIe port information
- */
-static void xilinx_pcie_enable_msi(struct xilinx_pcie_port *port)
-{
-	struct xilinx_msi *msi = &port->msi;
-	phys_addr_t msg_addr;
-
-	msi->msi_pages = __get_free_pages(GFP_KERNEL, 0);
-	msg_addr = virt_to_phys((void *)msi->msi_pages);
-	pcie_write(port, upper_32_bits(msg_addr), XILINX_PCIE_REG_MSIBASE1);
-	pcie_write(port, lower_32_bits(msg_addr), XILINX_PCIE_REG_MSIBASE2);
-}
+/* INTx Functions */
 
 /**
  * xilinx_pcie_intx_map - Set the handler for the INTx and mark IRQ as valid
@@ -266,47 +338,7 @@ static const struct irq_domain_ops intx_domain_ops = {
 	.xlate = pci_irqd_intx_xlate,
 };
 
-static void xilinx_pcie_handle_msi_irq(struct xilinx_pcie_port *port,
-				       u32 status_reg)
-{
-	struct xilinx_msi *msi;
-	unsigned long status;
-	u32 bit;
-	u32 virq;
-
-	msi = &port->msi;
-
-	while ((status = pcie_read(port, status_reg)) != 0) {
-		for_each_set_bit(bit, &status, 32) {
-			pcie_write(port, 1 << bit, status_reg);
-			if (status_reg == XILINX_PCIE_REG_MSI_HI)
-				bit = bit + 32;
-			virq = irq_find_mapping(msi->dev_domain, bit);
-			if (virq)
-				generic_handle_irq(virq);
-		}
-	}
-}
-
-static void xilinx_pcie_msi_handler_high(struct irq_desc *desc)
-{
-	struct irq_chip *chip = irq_desc_get_chip(desc);
-	struct xilinx_pcie_port *port = irq_desc_get_handler_data(desc);
-
-	chained_irq_enter(chip, desc);
-	xilinx_pcie_handle_msi_irq(port, XILINX_PCIE_REG_MSI_HI);
-	chained_irq_exit(chip, desc);
-}
-
-static void xilinx_pcie_msi_handler_low(struct irq_desc *desc)
-{
-	struct irq_chip *chip = irq_desc_get_chip(desc);
-	struct xilinx_pcie_port *port = irq_desc_get_handler_data(desc);
-
-	chained_irq_enter(chip, desc);
-	xilinx_pcie_handle_msi_irq(port, XILINX_PCIE_REG_MSI_LOW);
-	chained_irq_exit(chip, desc);
-}
+/* PCIe INTx handler */
 
 /**
  * xilinx_pcie_intr_handler - Interrupt Service Handler
@@ -431,6 +463,51 @@ error:
 	return IRQ_HANDLED;
 }
 
+/* MSI Interrupt */
+
+static void xilinx_pcie_handle_msi_irq(struct xilinx_pcie_port *port,
+				       u32 status_reg)
+{
+	struct xilinx_msi *msi;
+	unsigned long status;
+	u32 bit;
+	u32 virq;
+
+	msi = &port->msi;
+
+	while ((status = pcie_read(port, status_reg)) != 0) {
+		for_each_set_bit(bit, &status, 32) {
+			pcie_write(port, 1 << bit, status_reg);
+			if (status_reg == XILINX_PCIE_REG_MSI_HI)
+				bit = bit + 32;
+			virq = irq_find_mapping(msi->dev_domain, bit);
+			if (virq)
+				generic_handle_irq(virq);
+		}
+	}
+}
+
+static void xilinx_pcie_msi_handler_high(struct irq_desc *desc)
+{
+	struct irq_chip *chip = irq_desc_get_chip(desc);
+	struct xilinx_pcie_port *port = irq_desc_get_handler_data(desc);
+
+	chained_irq_enter(chip, desc);
+	xilinx_pcie_handle_msi_irq(port, XILINX_PCIE_REG_MSI_HI);
+	chained_irq_exit(chip, desc);
+}
+
+static void xilinx_pcie_msi_handler_low(struct irq_desc *desc)
+{
+	struct irq_chip *chip = irq_desc_get_chip(desc);
+	struct xilinx_pcie_port *port = irq_desc_get_handler_data(desc);
+
+	chained_irq_enter(chip, desc);
+	xilinx_pcie_handle_msi_irq(port, XILINX_PCIE_REG_MSI_LOW);
+	chained_irq_exit(chip, desc);
+}
+
+
 static struct irq_chip xilinx_msi_irq_chip = {
 	.name = "xilinx_pcie:msi",
 	.irq_enable = unmask_msi_irq,
@@ -521,9 +598,25 @@ static const struct irq_domain_ops dev_msi_domain_ops = {
 	.free   = xilinx_irq_domain_free,
 };
 
-static int xilinx_pcie_init_msi_irq_domain(struct xilinx_pcie_port *port)
+/**
+ * xilinx_pcie_enable_msi - Enable MSI support
+ * @port: PCIe port information
+ */
+static void xilinx_pcie_enable_msi(struct xilinx_pcie_port *port)
 {
-	struct fwnode_handle *fwnode = of_node_to_fwnode(port->dev->of_node);
+	struct xilinx_msi *msi = &port->msi;
+	phys_addr_t msg_addr;
+
+	msi->msi_pages = __get_free_pages(GFP_KERNEL, 0);
+	msg_addr = virt_to_phys((void *)msi->msi_pages);
+	pcie_write(port, upper_32_bits(msg_addr), XILINX_PCIE_REG_MSIBASE1);
+	pcie_write(port, lower_32_bits(msg_addr), XILINX_PCIE_REG_MSIBASE2);
+}
+
+static int xilinx_pcie_init_msi_irq_domain(struct xilinx_pcie_port *port, 
+    struct device_node *node)
+{
+	struct fwnode_handle *fwnode = of_node_to_fwnode(node);
 	struct xilinx_msi *msi = &port->msi;
 	int size = BITS_TO_LONGS(XILINX_NUM_MSI_IRQS) * sizeof(long);
 
@@ -555,13 +648,14 @@ static int xilinx_pcie_init_msi_irq_domain(struct xilinx_pcie_port *port)
 /**
  * xilinx_pcie_init_irq_domain - Initialize IRQ domain
  * @port: PCIe port information
+ * @node: Device Tree node to parse
  *
  * Return: '0' on success and error value on failure
  */
-static int xilinx_pcie_init_irq_domain(struct xilinx_pcie_port *port)
+static int xilinx_pcie_init_irq_domain(struct xilinx_pcie_port *port, 
+    struct device_node *node)
 {
-	struct device *dev = port->dev;
-	struct device_node *node = dev->of_node;
+	struct device *dev = port->pcie->dev;
 	struct device_node *pcie_intc_node;
 
 	/* Setup INTx */
@@ -572,14 +666,90 @@ static int xilinx_pcie_init_irq_domain(struct xilinx_pcie_port *port)
 	}
 
 	port->leg_domain = irq_domain_add_linear(pcie_intc_node, INTX_NUM,
-						 &intx_domain_ops,
-						 port);
+						 &intx_domain_ops, port);
 	if (!port->leg_domain) {
 		dev_err(dev, "Failed to get a INTx IRQ domain\n");
 		return PTR_ERR(port->leg_domain);
 	}
 
-	xilinx_pcie_init_msi_irq_domain(port);
+	xilinx_pcie_init_msi_irq_domain(port, node);
+
+	return 0;
+}
+
+static void xilinx_pcie_port_free(struct xilinx_pcie_port *port)
+{
+	struct xilinx_pcie *pcie = port->pcie;
+	struct device *dev = pcie->dev;
+
+	list_del(&port->list);
+	devm_kfree(dev, port);
+}
+
+static void xilinx_pcie_put_resources(struct xilinx_pcie *pcie)
+{
+	struct xilinx_pcie_port *port, *tmp;
+
+	list_for_each_entry_safe(port, tmp, &pcie->ports, list)
+		xilinx_pcie_port_free(port);
+}
+
+/**
+ * xilinx_pcie_register_host - register 
+ * tree-like PCIe bridges, buses and devices to host
+ * @pcie: Xilinx PCIe structure
+ *
+ * Return: '0' on success and error value on failure
+ */
+static int xilinx_pcie_register_host(struct pci_host_bridge *host)
+{
+	struct xilinx_pcie *pcie = pci_host_bridge_priv(host);
+	struct pci_bus *child;
+	int err;
+
+	host->busnr = pcie->busn.start;
+	host->dev.parent = pcie->dev;
+	host->ops = &xilinx_pcie_ops;
+	host->sysdata = pcie;
+	host->map_irq = of_irq_parse_and_map_pci;
+	host->swizzle_irq = pci_common_swizzle;
+
+	err = pci_scan_root_bus_bridge(host);
+	if (err < 0)
+		return err;
+
+	pci_assign_unassigned_bus_resources(host->bus);
+
+	list_for_each_entry(child, &host->bus->children, node)
+		pcie_bus_configure_settings(child);
+
+	pci_bus_add_devices(host->bus);
+
+	return 0;
+}
+
+/**
+ * xilinx_pcie_request_resources - add resources to list
+ * @pcie: Xilinx PCIe structure
+ *
+ * Return: '0' on success and error value on failure
+ */
+static int xilinx_pcie_request_resources(struct xilinx_pcie *pcie)
+{
+	struct pci_host_bridge *host = pci_host_bridge_from_priv(pcie);
+	struct list_head *windows = &host->windows;
+	struct device *dev = pcie->dev;
+	int err;
+
+	pci_add_resource_offset(windows, &pcie->pio, pcie->offset.io);
+	pci_add_resource_offset(windows, &pcie->mem, pcie->offset.mem);
+	pci_add_resource(windows, &pcie->busn);
+
+	err = devm_request_pci_bus_resources(dev, windows);
+	if (err < 0)
+		return err;
+
+	pci_remap_iospace(&pcie->pio, pcie->io.start);
 
 	return 0;
 }
@@ -590,10 +760,14 @@ static int xilinx_pcie_init_irq_domain(struct xilinx_pcie_port *port)
  */
 static void xilinx_pcie_init_port(struct xilinx_pcie_port *port)
 {
-	if (xilinx_pcie_link_is_up(port))
-		dev_info(port->dev, "PCIe Link is UP\n");
-	else
+	if (!xilinx_pcie_link_is_up(port))
+  {
 		dev_info(port->dev, "PCIe Link is DOWN\n");
+    xilinx_pcie_port_free(port);
+    return;
+  }
+	
+  dev_info(port->dev, "PCIe Link is UP\n");
 
 	/* Disable all interrupts */
 	pcie_write(port, ~XILINX_PCIE_IDR_ALL_MASK,
@@ -613,6 +787,7 @@ static void xilinx_pcie_init_port(struct xilinx_pcie_port *port)
 		pcie_write(port, XILINX_PCIE_IDR_ALL_MASK,
 			   XILINX_PCIE_REG_MSI_HI_MASK);
 	}
+
 	/* Enable the Bridge enable bit */
 	pcie_write(port, pcie_read(port, XILINX_PCIE_REG_RPSC) |
 			 XILINX_PCIE_REG_RPSC_BEN,
@@ -620,36 +795,116 @@ static void xilinx_pcie_init_port(struct xilinx_pcie_port *port)
 }
 
 /**
- * xilinx_pcie_parse_dt - Parse Device tree
- * @port: PCIe port information
+ * xilinx_pcie_setup_irq - Setup INTx/MSI interrupt for specified root port
+ * @port: PCIe root port information
+ * @node: Device Tree Node to parse
  *
  * Return: '0' on success and error value on failure
  */
-static int xilinx_pcie_parse_dt(struct xilinx_pcie_port *port)
+static int xilinx_pcie_setup_irq(struct xilinx_pcie_port *port,
+			      struct device_node *node)
 {
-	struct device *dev = port->dev;
-	struct device_node *node = dev->of_node;
+	struct xilinx_pcie *pcie = port->pcie;
+	struct device *dev = pcie->dev;
 	struct platform_device *pdev = to_platform_device(dev);
-	struct resource regs;
-	const char *type;
-	int err, mode_val, val;
+	int err, irq;
 
-	type = of_get_property(node, "device_type", NULL);
-	if (!type || strcmp(type, "pci")) {
-		dev_err(dev, "invalid \"device_type\" %s\n", type);
-		return -EINVAL;
+	/* MSI FIFO mode */
+  if (port->msi_mode == MSI_FIFO_MODE)
+  {
+    irq = platform_get_irq(pdev, port->slot);
+		if (irq <= 0) {
+			dev_err(dev, "Unable to find IRQ line on port %d\n", port->slot);
+			return -ENXIO;
+		}
+    err = devm_request_irq(dev, irq, xilinx_pcie_intr_handler,
+			       IRQF_SHARED | IRQF_NO_THREAD, "xilinx-pcie", port);
+	
+    if (err) {
+      dev_err(dev, "unable to request IRQ %d\n", irq);
+      return err;
+    }
 	}
 
-	err = of_address_to_resource(node, 0, &regs);
+  /*MSI Decode mode (newly support)*/
+  else if (port->msi_mode == MSI_DECD_MODE)
+  {
+    /*request misc irq*/
+    irq = platform_get_irq(pdev, (port->slot * REQ_DECD_TOTAL + REQ_DECD_MISC));
+		if (irq <= 0) {
+			dev_err(dev, "Unable to find misc IRQ line\n");
+			return irq;
+		}
+		err = devm_request_irq(dev, irq, xilinx_pcie_intr_handler,
+				       IRQF_SHARED | IRQF_NO_THREAD, "xilinx-pcie", port);
+		if (err) {
+			dev_err(dev, "unable to request misc IRQ line of port %d\n", port->slot);
+			return err;
+		}
+
+    /*request msi0 req*/
+    irq = platform_get_irq(pdev, (port->slot * REQ_DECD_TOTAL + REQ_DECD_MSI0));
+		if (irq <= 0) {
+			dev_err(dev, "Unable to find msi0 IRQ line\n");
+			return irq;
+		}
+
+		irq_set_chained_handler_and_data(irq, xilinx_pcie_msi_handler_low, port);
+
+    /*request msi1 req*/
+    irq = platform_get_irq(pdev, (port->slot * REQ_DECD_TOTAL + REQ_DECD_MSI1));
+		if (irq <= 0) {
+			dev_err(dev, "Unable to find msi1 IRQ line\n");
+			return irq;
+		}
+
+		irq_set_chained_handler_and_data(irq, xilinx_pcie_msi_handler_high, port);
+  }
+
+	err = xilinx_pcie_init_irq_domain(port, node);
 	if (err) {
-		dev_err(dev, "missing \"reg\" property\n");
+		dev_err(dev, "failed to init PCIe IRQ domain\n");
 		return err;
 	}
 
-	port->reg_base = devm_ioremap_resource(dev, &regs);
-	if (IS_ERR(port->reg_base))
-		return PTR_ERR(port->reg_base);
+	return 0;
+}
 
+/**
+ * xilinx_pcie_parse_port - Parse Root Port
+ * @pcie: PCIe root complex information
+ * @node: Device Tree Node to parse
+ * @slot: the number of current root port
+ *
+ * Return: '0' on success and error value on failure
+ */
+static int xilinx_pcie_parse_port(struct xilinx_pcie *pcie,
+			       struct device_node *node,
+			       int slot)
+{
+	struct xilinx_pcie_port *port;
+	struct resource *regs;
+	struct device *dev = pcie->dev;
+	struct platform_device *pdev = to_platform_device(dev);
+	char name[10];
+	int err, mode_val, val;
+
+	port = devm_kzalloc(dev, sizeof(*port), GFP_KERNEL);
+	if (!port)
+		return -ENOMEM;
+
+	snprintf(name, sizeof(name), "rp%d", slot);
+	regs = platform_get_resource_byname(pdev, IORESOURCE_MEM, name);
+	port->reg_base = devm_pci_remap_cfg_resource(dev, regs);
+	if (IS_ERR(port->reg_base)) {
+		dev_err(dev, "failed to map port%d base\n", slot);
+		return PTR_ERR(port->reg_base);
+	}
+
+	port->slot = slot;
+	port->pcie = pcie;
+
+  /*check MSI interrupt mode*/
 	val = pcie_read(port, XILINX_PCIE_REG_BIR);
 	val = (val >> XILINX_PCIE_FIFO_SHIFT) & MSI_DECD_MODE;
 	mode_val = pcie_read(port, XILINX_PCIE_REG_VSEC) &
@@ -663,59 +918,115 @@ static int xilinx_pcie_parse_dt(struct xilinx_pcie_port *port)
 		dev_info(dev, "Using MSI FIFO mode\n");
 	}
 
-	if (port->msi_mode == MSI_DECD_MODE) {
-		port->irq_misc = platform_get_irq_byname(pdev, "misc");
-		if (port->irq_misc <= 0) {
-			dev_err(dev, "Unable to find misc IRQ line\n");
-			return port->irq_misc;
-		}
-		err = devm_request_irq(dev, port->irq_misc,
-				       xilinx_pcie_intr_handler,
-				       IRQF_SHARED | IRQF_NO_THREAD,
-				       "xilinx-pcie", port);
-		if (err) {
-			dev_err(dev, "unable to request misc IRQ line %d\n",
-				port->irq);
+	/*setup interrupt*/
+	err = xilinx_pcie_setup_irq(port, node);
+	if (err)
+		return err;
+
+	INIT_LIST_HEAD(&port->list);
+	list_add_tail(&port->list, &pcie->ports);
+
+	return 0;
+}
+
+/**
+ * xilinx_pcie_parse_dt - Parse Device tree and setup each root port
+ * @port: PCIe root complex (RC) information
+ *
+ * Return: '0' on success and error value on failure
+ */
+static int xilinx_pcie_parse_dt(struct xilinx_pcie *pcie)
+{
+	struct device *dev = pcie->dev;
+	struct device_node *node = dev->of_node, *child;
+
+	struct of_pci_range_parser parser;
+	struct of_pci_range range;
+
+	struct resource res;
+	struct xilinx_pcie_port *port, *tmp;
+
+	const char *type;
+	int err;
+
+	struct platform_device *pdev = to_platform_device(dev);
+	struct resource regs;
+
+	/*parse device_type (this field must be pci)*/
+	type = of_get_property(node, "device_type", NULL);
+	if (!type || strcmp(type, "pci")) {
+		dev_err(dev, "invalid \"device_type\" %s\n", type);
+		return -EINVAL;
+	}
+
+	/*parse range field for PCI I/O and Memory region*/
+	if (of_pci_range_parser_init(&parser, node)) {
+		dev_err(dev, "missing \"ranges\" property\n");
+		return -EINVAL;
+	}
+
+	for_each_of_pci_range(&parser, &range) {
+		err = of_pci_range_to_resource(&range, node, &res);
+		if (err < 0)
 			return err;
-		}
 
-		port->msi.irq_msi0 = platform_get_irq_byname(pdev, "msi0");
-		if (port->msi.irq_msi0 <= 0) {
-			dev_err(dev, "Unable to find msi0 IRQ line\n");
-			return port->msi.irq_msi0;
-		}
+		switch (res.flags & IORESOURCE_TYPE_BITS) {
+		case IORESOURCE_IO:
+			pcie->offset.io = res.start - range.pci_addr;
 
-		irq_set_chained_handler_and_data(port->msi.irq_msi0,
-						 xilinx_pcie_msi_handler_low,
-						 port);
+			memcpy(&pcie->pio, &res, sizeof(res));
+			pcie->pio.name = node->full_name;
 
-		port->msi.irq_msi1 = platform_get_irq_byname(pdev, "msi1");
-		if (port->msi.irq_msi1 <= 0) {
-			dev_err(dev, "Unable to find msi1 IRQ line\n");
-			return port->msi.irq_msi1;
-		}
+			pcie->io.start = range.cpu_addr;
+			pcie->io.end = range.cpu_addr + range.size - 1;
+			pcie->io.flags = IORESOURCE_MEM;
+			pcie->io.name = "I/O";
 
-		irq_set_chained_handler_and_data(port->msi.irq_msi1,
-						 xilinx_pcie_msi_handler_high,
-						 port);
+			memcpy(&res, &pcie->io, sizeof(res));
+			break;
 
-	} else if (port->msi_mode == MSI_FIFO_MODE) {
-		port->irq = irq_of_parse_and_map(node, 0);
-		if (!port->irq) {
-			dev_err(dev, "Unable to find IRQ line\n");
-			return -ENXIO;
-		}
+		case IORESOURCE_MEM:
+			pcie->offset.mem = res.start - range.pci_addr;
 
-		err = devm_request_irq(dev, port->irq, xilinx_pcie_intr_handler,
-				       IRQF_SHARED | IRQF_NO_THREAD,
-				       "xilinx-pcie", port);
-		if (err) {
-			dev_err(dev, "unable to request irq %d\n", port->irq);
-			return err;
+			memcpy(&pcie->mem, &res, sizeof(res));
+			pcie->mem.name = "non-prefetchable";
+			break;
 		}
 	}
 
-	return 0;
+	/*parse optional bus_range field*/
+	err = of_pci_parse_bus_range(node, &pcie->busn);
+	if (err < 0) {
+		dev_err(dev, "failed to parse bus ranges property: %d\n", err);
+		pcie->busn.name = node->name;
+		pcie->busn.start = 0;
+		pcie->busn.end = 0xff;
+		pcie->busn.flags = IORESOURCE_BUS;
+	}
+
+	/*parse root ports declared in device tree*/
+	for_each_available_child_of_node(node, child) {
+		int slot;
+
+		/*parse the reg field of child node to obtain the slot number of root port*/
+		err = of_pci_get_devfn(child);
+		if (err < 0) {
+			dev_err(dev, "failed to parse devfn: %d\n", err);
+			return err;
+		}
+
+		slot = PCI_SLOT(err);
+
+		err = xilinx_pcie_parse_port(pcie, child, slot);
+		if (err)
+			return err;
+	}
+
+	/* enable each port, and then check link status */
+	list_for_each_entry_safe(port, tmp, &pcie->ports, list)
+		xilinx_pcie_init_port(port);
+
+  return 0;
 }
 
 /**
@@ -726,70 +1037,51 @@ static int xilinx_pcie_parse_dt(struct xilinx_pcie_port *port)
  */
 static int xilinx_pcie_probe(struct platform_device *pdev)
 {
-	struct xilinx_pcie_port *port;
 	struct device *dev = &pdev->dev;
-	struct pci_bus *bus;
-	struct pci_bus *child;
+	struct xilinx_pcie *pcie;
+
 	struct pci_host_bridge *bridge;
 	int err;
-	resource_size_t iobase = 0;
-	LIST_HEAD(res);
 
-	bridge = devm_pci_alloc_host_bridge(dev, sizeof(*port));
-	if (!bridge)
+	/*check if Device Tree Node is available*/
+	if (!dev->of_node)
 		return -ENODEV;
 
-	port = pci_host_bridge_priv(bridge);
+	/* Allocation of struct pci_host_bridge as a new API 
+	 * to scan PCI bus */
+	bridge = devm_pci_alloc_host_bridge(dev, sizeof(*pcie));
+	if (!bridge)
+		return -ENOMEM;
 
-	port->dev = dev;
+	pcie = pci_host_bridge_priv(bridge);
 
-	err = xilinx_pcie_parse_dt(port);
+	pcie->dev = dev;
+	platform_set_drvdata(pdev, pcie);
+	INIT_LIST_HEAD(&pcie->ports);
+
+	/*setup root complex and root ports by parsing device tree*/
+	err = xilinx_pcie_parse_dt(pcie);
 	if (err) {
 		dev_err(dev, "Parsing DT failed\n");
 		return err;
 	}
 
-	xilinx_pcie_init_port(port);
-
-	err = xilinx_pcie_init_irq_domain(port);
-	if (err) {
-		dev_err(dev, "Failed creating IRQ Domain\n");
-		return err;
-	}
-
-	err = of_pci_get_host_bridge_resources(dev->of_node, 0, 0xff, &res,
-					       &iobase);
-	if (err) {
-		dev_err(dev, "Getting bridge resources failed\n");
-		return err;
-	}
-
-	err = devm_request_pci_bus_resources(dev, &res);
+	/*Add resources of I/O, memory and bus*/
+	err = xilinx_pcie_request_resources(pcie);
 	if (err)
-		goto error;
+		goto put_resources;
 
-	list_splice_init(&res, &bridge->windows);
-	bridge->dev.parent = dev;
-	bridge->sysdata = port;
-	bridge->busnr = port->root_busno;
-	bridge->ops = &xilinx_pcie_ops;
-	bridge->map_irq = of_irq_parse_and_map_pci;
-	bridge->swizzle_irq = pci_common_swizzle;
-
-	err = pci_scan_root_bus_bridge(bridge);
+	/*register tree-like PCIe resources to host*/
+	err = xilinx_pcie_register_host(bridge);
 	if (err)
-		goto error;
+		goto put_resources;
 
-	bus = bridge->bus;
-
-	pci_assign_unassigned_bus_resources(bus);
-	list_for_each_entry(child, &bus->children, node)
-		pcie_bus_configure_settings(child);
-	pci_bus_add_devices(bus);
 	return 0;
 
-error:
-	pci_free_resource_list(&res);
+put_resources:
+	if (!list_empty(&pcie->ports))
+		xilinx_pcie_put_resources(pcie);
+
 	return err;
 }
 
