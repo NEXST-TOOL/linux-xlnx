@@ -613,14 +613,13 @@ static void xilinx_pcie_enable_msi(struct xilinx_pcie_port *port)
 	pcie_write(port, lower_32_bits(msg_addr), XILINX_PCIE_REG_MSIBASE2);
 }
 
-static int xilinx_pcie_init_msi_irq_domain(struct xilinx_pcie_port *port, 
-    struct device_node *node)
+static int xilinx_pcie_init_msi_irq_domain(struct xilinx_pcie_port *port)
 {
-	struct fwnode_handle *fwnode = of_node_to_fwnode(node);
+	struct fwnode_handle *fwnode = of_node_to_fwnode(port->pcie->dev->of_node);
 	struct xilinx_msi *msi = &port->msi;
 	int size = BITS_TO_LONGS(XILINX_NUM_MSI_IRQS) * sizeof(long);
 
-	msi->dev_domain = irq_domain_add_linear(NULL, XILINX_NUM_MSI_IRQS,
+	msi->dev_domain = irq_domain_create_linear(fwnode, XILINX_NUM_MSI_IRQS,
 						&dev_msi_domain_ops, port);
 	if (!msi->dev_domain) {
 		dev_err(port->dev, "failed to create dev IRQ domain\n");
@@ -672,7 +671,7 @@ static int xilinx_pcie_init_irq_domain(struct xilinx_pcie_port *port,
 		return PTR_ERR(port->leg_domain);
 	}
 
-	xilinx_pcie_init_msi_irq_domain(port, node);
+	xilinx_pcie_init_msi_irq_domain(port);
 
 	return 0;
 }
