@@ -123,6 +123,12 @@ struct xilinx_msi {
   phys_addr_t msi_phys;
 };
 
+struct xilinx_irq {
+  int slot;
+  int irq;
+  struct list_head list;
+};
+
 /**
  * struct xilinx_pcie_port - PCIe port information
  * @reg_base: IO Mapped Register Base
@@ -169,6 +175,8 @@ struct xilinx_pcie {
 		resource_size_t io;
 	} offset;
 	struct list_head ports;
+  struct list_head irqs;
+	struct mutex lock;		/* protect irqs list_head */
 };
 
 static inline u32 pcie_read(struct xilinx_pcie_port *port, u32 reg)
@@ -561,14 +569,36 @@ static void xilinx_pcie_free_msi(struct xilinx_msi *msi, unsigned long irq)
 static void xilinx_msi_teardown_irq(struct msi_controller *chip,
 				    unsigned int irq)
 {
-	struct pci_dev *pdev = to_pci_dev(chip->dev);
+  struct platform_device *pdev = to_platform_device(chip->dev);
+
 	struct irq_data *d = irq_get_irq_data(irq);
 	irq_hw_number_t hwirq = irqd_to_hwirq(d);
-	struct xilinx_pcie_port *port;
 
-	port = xilinx_pcie_find_port(pdev->bus, pdev->devfn);
-	if (!port)
-		return;
+  struct xilinx_pcie *pcie = platform_get_drvdata(pdev);
+	struct xilinx_pcie_port *port;
+  struct xilinx_irq *xlxirq;
+  int slot = (unsigned int)-1, match = 0;
+
+  /*find which slot this irq relies on*/
+	list_for_each_entry(xlxirq, &pcie->irqs, list)
+    if (xlxirq->irq == irq)
+    {
+      slot = xlxirq->slot;
+      break;
+    }
+
+  if (slot == (unsigned int)-1)
+    return;
+
+  list_for_each_entry(port, &pcie->ports, list)
+    if (port->slot == slot)
+    {
+      match = 1;
+      break;
+    }
+
+	if (!match) 
+    return;
 		
   xilinx_pcie_free_msi(&port->msi, hwirq);
 	irq_dispose_mapping(irq);
@@ -591,6 +621,7 @@ static int xilinx_pcie_msi_setup_irq(struct msi_controller *chip,
 	int hwirq;
 	struct msi_msg msg;
 	struct xilinx_msi *msi;
+  struct xilinx_irq *xlxirq;
 
 	port = xilinx_pcie_find_port(pdev->bus, pdev->devfn);
 	if (!port)
@@ -608,7 +639,17 @@ static int xilinx_pcie_msi_setup_irq(struct msi_controller *chip,
 		return -EINVAL;
 	}
 
-  chip->dev = &pdev->dev;
+	xlxirq = devm_kzalloc(port->pcie->dev, sizeof(*xlxirq), GFP_KERNEL);
+	if (!xlxirq)
+		return -ENOMEM;
+
+  xlxirq->slot = port->slot;
+  xlxirq->irq = irq;
+	INIT_LIST_HEAD(&xlxirq->list);
+
+  mutex_lock(&port->pcie->lock);
+	list_add_tail(&xlxirq->list, &port->pcie->irqs);
+  mutex_unlock(&port->pcie->lock);
 
 	irq_set_msi_desc(irq, desc);
 
@@ -1117,7 +1158,9 @@ static int xilinx_pcie_probe(struct platform_device *pdev)
 
 	pcie->dev = dev;
 	platform_set_drvdata(pdev, pcie);
+	mutex_init(&pcie->lock);
 	INIT_LIST_HEAD(&pcie->ports);
+	INIT_LIST_HEAD(&pcie->irqs);
 
 	/*setup root complex and root ports by parsing device tree*/
 	err = xilinx_pcie_parse_dt(pcie);
