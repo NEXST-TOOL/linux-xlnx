@@ -7,7 +7,6 @@ Required properties:
   64-bit address and 64-bit size
 - reg-names: Names of the above areas to use during resource lookup
   Each root port would be named as "rpX", where X indicates ID of a root port.
-  There is a subsys region to indicate public reset registers for each port
 - #address-cells: Address representation for root ports, set to <3>
   represents 3 cells in ranges
 - #size-cells: Size representation for root ports, set to <2>
@@ -66,11 +65,10 @@ MSI FIFO mode:
 	xdma_0: axi-pcie@80000000 {
 		compatible = "xlnx,xdma-host-3.00";
 		device_type = "pci";
-		reg = <0x0 0x82000000 0x0 0x1000>, /*subsys*/
-        <0x0 0x80000000 0x0 0x800000>, /*Root port 0*/
+		reg = <0x0 0x80000000 0x0 0x800000>, /*Root port 0*/
         <0x0 0x80800000 0x0 0x800000>, /*Root port 1*/
         <0x0 0x81000000 0x0 0x800000>; /*Root port 2*/
-    reg-names = "subsys", "rp0", "rp1", "rp2";
+    reg-names = "rp0", "rp1", "rp2";
 		#address-cells = <3>;
 		#size-cells = <2>;
 		ranges = <0x02000000 0x0 0xA0000000 0x0 0xA0000000 0x0 0x300000>;
@@ -144,11 +142,10 @@ MSI DECODE mode:
 	xdma_0: axi-pcie@80000000 {
 		compatible = "xlnx,xdma-host-3.00";
 		device_type = "pci";
-		reg = <0x0 0x82000000 0x0 0x1000>, /*subsys*/
-        <0x0 0x80000000 0x0 0x800000>, /*Root port 0*/
+		reg = <0x0 0x80000000 0x0 0x800000>, /*Root port 0*/
         <0x0 0x80800000 0x0 0x800000>, /*Root port 1*/
         <0x0 0x81000000 0x0 0x800000>; /*Root port 2*/
-    reg-names = "subsys", "rp0", "rp1", "rp2";
+    reg-names = "rp0", "rp1", "rp2";
 		#address-cells = <3>;
 		#size-cells = <2>;
 		ranges = <0x02000000 0x0 0xA0000000 0x0 0xA0000000 0x0 0x300000>;

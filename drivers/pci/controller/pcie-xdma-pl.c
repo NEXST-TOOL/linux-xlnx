@@ -21,7 +21,6 @@
 #include <linux/pci.h>
 #include <linux/platform_device.h>
 #include <linux/irqchip/chained_irq.h>
-#include <linux/delay.h>
 #include "../pci.h"
 
 /* Register definitions */
@@ -172,7 +171,6 @@ struct xilinx_pcie {
 	struct list_head ports;
   int nr_cpus;
 	struct irq_domain *msi_domain;
-	void __iomem *reg_reset;
 };
 
 static inline u32 pcie_read(struct xilinx_pcie_port *port, u32 reg)
@@ -754,13 +752,6 @@ static int xilinx_pcie_request_resources(struct xilinx_pcie *pcie)
  */
 static void xilinx_pcie_init_port(struct xilinx_pcie_port *port)
 {
-	struct xilinx_pcie *pcie = port->pcie;
-
-  /*reset pcie port first*/
-	writel(0x0, pcie->reg_reset + (port->slot << 3));
-  mdelay(5);
-	writel(0x1, pcie->reg_reset + (port->slot << 3));
-
 	if (!xilinx_pcie_link_is_up(port))
   {
 		dev_info(port->dev, "PCIe Link is DOWN\n");
@@ -983,7 +974,6 @@ static int xilinx_pcie_parse_port(struct xilinx_pcie *pcie,
 static int xilinx_pcie_parse_dt(struct xilinx_pcie *pcie)
 {
 	struct device *dev = pcie->dev;
-	struct platform_device *pdev = to_platform_device(dev);
 	struct device_node *node = dev->of_node, *child;
 
 	struct of_pci_range_parser parser;
@@ -991,8 +981,6 @@ static int xilinx_pcie_parse_dt(struct xilinx_pcie *pcie)
 
 	struct resource res;
 	struct xilinx_pcie_port *port, *tmp;
-
-	struct resource *regs;
 
 	const char *type;
 	int err;
@@ -1009,16 +997,6 @@ static int xilinx_pcie_parse_dt(struct xilinx_pcie *pcie)
 		dev_err(dev, "missing \"ranges\" property\n");
 		return -EINVAL;
 	}
-
-  /*parse dt to get base address of root port reset registers*/
-	regs = platform_get_resource_byname(pdev, IORESOURCE_MEM, "subsys");
-  if(regs) {
-    pcie->reg_reset = devm_ioremap_resource(dev, regs);
-    if (IS_ERR(pcie->reg_reset)) {
-      dev_err(dev, "failed to map reset base address of each port\n");
-      return PTR_ERR(pcie->reg_reset);
-    }
-  }
 
 	for_each_of_pci_range(&parser, &range) {
 		err = of_pci_range_to_resource(&range, node, &res);
