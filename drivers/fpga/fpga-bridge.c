@@ -310,7 +310,6 @@ static ssize_t state_show(struct device *dev,
 static DEVICE_ATTR_RO(name);
 static DEVICE_ATTR_RO(state);
 
-#ifdef DEBUG
 static ssize_t set_store(struct device *dev,
 			 struct device_attribute *attr,
 			 const char *buf, size_t count)
@@ -329,14 +328,11 @@ static ssize_t set_store(struct device *dev,
 	return count;
 }
 static DEVICE_ATTR_WO(set);
-#endif
 
 static struct attribute *fpga_bridge_attrs[] = {
 	&dev_attr_name.attr,
 	&dev_attr_state.attr,
-#ifdef DEBUG
 	&dev_attr_set.attr,
-#endif
 	NULL,
 };
 ATTRIBUTE_GROUPS(fpga_bridge);
