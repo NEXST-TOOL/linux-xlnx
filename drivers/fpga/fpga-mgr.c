@@ -342,6 +342,7 @@ fail_put:
  * @mgr:	fpga manager
  * @info:	fpga image specific information
  * @image_name:	name of image file on the firmware search path
+ * @sysfs: boolean indicates that whether function invoked from the sysfs interface
  *
  * Request an FPGA image using the firmware class, then write out to the FPGA.
  * Update the state before each step to provide info on what step failed if
@@ -353,7 +354,7 @@ fail_put:
  */
 static int fpga_mgr_firmware_load(struct fpga_manager *mgr,
 				  struct fpga_image_info *info,
-				  const char *image_name)
+				  const char *image_name, int sysfs)
 {
 	struct device *dev = &mgr->dev;
 	const struct firmware *fw;
@@ -363,9 +364,12 @@ static int fpga_mgr_firmware_load(struct fpga_manager *mgr,
 
 	mgr->state = FPGA_MGR_STATE_FIRMWARE_REQ;
 
-	/* flags indicates whether to do full or partial reconfiguration */
-	info->flags = mgr->flags;
-	memcpy(info->key, mgr->key, ENCRYPTED_KEY_LEN);
+	if (sysfs == 1)
+	{
+		/* flags indicates whether to do full or partial reconfiguration */
+		info->flags = mgr->flags;
+		memcpy(info->key, mgr->key, ENCRYPTED_KEY_LEN);
+	}
 
 	ret = request_firmware(&fw, image_name, dev);
 	if (ret) {
@@ -400,7 +404,7 @@ int fpga_mgr_load(struct fpga_manager *mgr, struct fpga_image_info *info)
 	if (info->buf && info->count)
 		return fpga_mgr_buf_load(mgr, info, info->buf, info->count);
 	if (info->firmware_name)
-		return fpga_mgr_firmware_load(mgr, info, info->firmware_name);
+		return fpga_mgr_firmware_load(mgr, info, info->firmware_name, 0);
 	return -EINVAL;
 }
 EXPORT_SYMBOL_GPL(fpga_mgr_load);
@@ -506,7 +510,7 @@ static ssize_t firmware_store(struct device *dev,
 	if (image_name[len - 1] == '\n')
 		image_name[len - 1] = 0;
 
-	ret = fpga_mgr_firmware_load(mgr, &info, image_name);
+	ret = fpga_mgr_firmware_load(mgr, &info, image_name, 1);
 	if (ret)
 		return ret;
 
