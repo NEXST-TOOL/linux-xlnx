@@ -413,6 +413,7 @@ static int pca954x_probe(struct i2c_client *client,
 	struct i2c_mux_core *muxc;
 	struct pca954x *data;
 	int num;
+	int actual_num = 0;
 	int ret;
 
 	if (!i2c_check_functionality(adap, I2C_FUNC_SMBUS_BYTE))
@@ -422,6 +423,7 @@ static int pca954x_probe(struct i2c_client *client,
 			     pca954x_select_chan, pca954x_deselect_mux);
 	if (!muxc)
 		return -ENOMEM;
+
 	data = i2c_mux_priv(muxc);
 
 	i2c_set_clientdata(client, muxc);
@@ -484,7 +486,13 @@ static int pca954x_probe(struct i2c_client *client,
 	for (num = 0; num < data->chip->nchans; num++) {
 		ret = i2c_mux_add_adapter(muxc, 0, num, 0);
 		if (ret)
-			goto fail_cleanup;
+		{
+			if (ret == -ENODEV)
+				continue;
+			else
+				goto fail_cleanup;
+		}
+		actual_num++;
 	}
 
 	if (data->irq) {
@@ -503,7 +511,7 @@ static int pca954x_probe(struct i2c_client *client,
 	device_create_file(dev, &dev_attr_idle_state);
 
 	dev_info(dev, "registered %d multiplexed busses for I2C %s %s\n",
-		 num, data->chip->muxtype == pca954x_ismux
+		 actual_num, data->chip->muxtype == pca954x_ismux
 				? "mux" : "switch", client->name);
 
 	return 0;

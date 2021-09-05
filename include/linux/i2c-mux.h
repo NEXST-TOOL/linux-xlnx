@@ -55,9 +55,14 @@ struct i2c_adapter *i2c_root_adapter(struct device *dev);
  * The chan_id parameter is passed to the select and deselect
  * callback functions to perform hardware-specific mux control.
  */
+
 int i2c_mux_add_adapter(struct i2c_mux_core *muxc,
 			u32 force_nr, u32 chan_id,
 			unsigned int class);
+
+u32 i2c_mux_check_adapter(struct i2c_adapter *adap);
+
+void i2c_mux_del_adapter(struct i2c_mux_core *muxc, u32 chan_id);
 
 void i2c_mux_del_adapters(struct i2c_mux_core *muxc);
 
