@@ -386,8 +386,13 @@ int i2c_mux_add_adapter(struct i2c_mux_core *muxc,
 			}
 		}
 
-		priv->adap.dev.of_node = child;
 		of_node_put(mux_node);
+
+		if (!child) {
+			ret = -ENODEV;
+			goto err_free_priv;
+		}
+		priv->adap.dev.of_node = child;
 	}
 
 	/*
