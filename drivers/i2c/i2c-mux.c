@@ -285,6 +285,7 @@ int i2c_mux_add_adapter(struct i2c_mux_core *muxc,
 {
 	struct i2c_adapter *parent = muxc->parent;
 	struct i2c_mux_priv *priv;
+	struct i2c_client *client;
 	char symlink_name[20];
 	int ret;
 
@@ -292,6 +293,9 @@ int i2c_mux_add_adapter(struct i2c_mux_core *muxc,
 		dev_err(muxc->dev, "No room for more i2c-mux adapters\n");
 		return -EINVAL;
 	}
+
+	/* use struct i2c_client to obtain the MUX I2C address */
+	client = to_i2c_client(muxc->dev);
 
 	priv = kzalloc(sizeof(*priv), GFP_KERNEL);
 	if (!priv)
@@ -326,7 +330,7 @@ int i2c_mux_add_adapter(struct i2c_mux_core *muxc,
 
 	/* Now fill out new adapter structure */
 	snprintf(priv->adap.name, sizeof(priv->adap.name),
-		 "i2c-%d-mux (chan_id %d)", i2c_adapter_id(parent), chan_id);
+		 "i2c-%d-%d-mux (chan_id %d)", i2c_adapter_id(parent), client->addr, chan_id);
 	priv->adap.owner = THIS_MODULE;
 	priv->adap.algo = &priv->algo;
 	priv->adap.algo_data = priv;
