@@ -10,4 +10,26 @@ config SOC_SIFIVE
        help
          This enables support for SiFive SoC platform hardware.
 
+config ICT_SERVE
+       bool "ICT SERVE series platforms"
+       select SIFIVE_PLIC
+       help
+         This enables support for ICT SERVE prototyping platform.
+
+choice
+       prompt "ICT SERVE platform option"
+       help
+         This selects the target SERVE platform.
+
+config SERVE_PLAT_H
+       bool "ICT SERVE.h platform with High Bandwidth Memory (HBM)"
+       select SERIAL_UARTLITE
+       select SERIAL_UARTLITE_CONSOLE
+       select XILINX_AXI_EMAC
+       select DP83867_PHY
+       help
+         ICT SERVE.h platform (e.g., Xilinx VCU128) based on Xilinx Virtex UtralScale+ XCVU37P.
+
+endchoice
+
 endmenu
