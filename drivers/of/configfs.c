@@ -138,6 +138,8 @@ static ssize_t cfs_overlay_item_status_store(struct config_item *item,
 			if (err < 0)
 				goto out_err;
 		}
+		else
+			return -EPERM;
 	}
 	return count;
 out_err:

@@ -86,21 +86,9 @@ static int xlnx_pr_decoupler_enable_set(struct fpga_bridge *bridge, bool enable)
 	if (err)
 		return err;
 
-	if (enable) {
-		//waiting for deassertion of read/write BUSY signals in AXI firewall
-		u32 res = 0;
-		do {
-			res = xlnx_axi_firewall_read(priv, 
-					FIREWALL_SI_FAULT_STATUS);
-		} while(res & (WR_RESP_BUSY | RD_RESP_BUSY));
-
-		//unblock AXI firewall
-		xlnx_axi_firewall_write(priv, FIREWALL_SI_UNBLOCK_OFFSET, 
-				FIREWALL_SI_CMD_UNBLOCK);
-
+	if (enable)
 		//PR coupling (release ROLE resetn)
 		xlnx_pr_decoupler_write(priv, CTRL_OFFSET, CTRL_CMD_COUPLE);
-	}
 	else
 		xlnx_pr_decoupler_write(priv, CTRL_OFFSET, CTRL_CMD_DECOUPLE);
 
