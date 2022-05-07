@@ -28,6 +28,16 @@
 
 #include "of_private.h"
 
+enum cfs_overlay_status {
+	OL_IDLE = 0,
+	OL_CHANGESET_APPLIED,
+	OL_CHANGESET_PRE_APPLY_ERROR,
+	OL_CHANGESET_POST_APPLY_ERROR,
+	OL_CHANGESET_PRE_REMOVE_ERROR,
+	OL_CHANGESET_POST_REMOVE_ERROR
+};
+
+
 struct cfs_overlay_item {
 	struct config_item	item;
 
@@ -36,6 +46,8 @@ struct cfs_overlay_item {
 	const struct firmware	*fw;
 	struct device_node	*overlay;
 	int			ov_id;
+
+	enum cfs_overlay_status ov_status;
 
 	void			*dtbo;
 	int			dtbo_size;
@@ -51,11 +63,9 @@ static int create_overlay(struct cfs_overlay_item *overlay, void *blob)
 
 	/* FIXME */
 	err = of_overlay_fdt_apply(blob, overlay->dtbo_size, &overlay->ov_id);
-	if (err < 0) {
+	if (err < 0)
 		pr_err("%s: Failed to create overlay (err=%d)\n",
 		       __func__, err);
-		return err;
-	}
 
 	return err;
 }
@@ -97,19 +107,29 @@ static ssize_t cfs_overlay_item_status_store(struct config_item *item,
 	char *s;
 	int err;
 	
-	/*obtain status value from configfs*/
+	/*obtain user-set status value from configfs*/
 	status = kstrtoul(page, 10, &value);
 	if (status)
 		return -EPERM;
 	
-	if (value == 0) {                       //removing dtbo
-		if (overlay->ov_id >= 0) {      //overlay MUST be available
-			of_overlay_remove(&overlay->ov_id);
-                        
-			if (overlay->fw)
+	if (value == 0) {                      //removing dtbo
+		if (overlay->ov_id > 0) {      //overlay MUST be available
+			if (overlay->fw)       //release dtbo firmware first
 				release_firmware(overlay->fw);
 			
+			err = of_overlay_remove(&overlay->ov_id);
+			if (err) {
+				if (overlay->ov_id == 0) {
+					overlay->ov_id = -1;
+					overlay->ov_status = OL_CHANGESET_POST_REMOVE_ERROR;
+				}
+				else
+					overlay->ov_status = OL_CHANGESET_PRE_REMOVE_ERROR;
+				
+				return err;
+			}
 			overlay->ov_id = -1;
+			overlay->ov_status = OL_IDLE;
 		}
 		else
 			return -EPERM;
@@ -135,29 +155,36 @@ static ssize_t cfs_overlay_item_status_store(struct config_item *item,
 			overlay->dtbo_size = overlay->fw->size;
 			
 			err = create_overlay(overlay, (void *)overlay->fw->data);
-			if (err < 0)
-				goto out_err;
+			if (err < 0) {
+				if (overlay->ov_id == 0) {
+					overlay->ov_id = -1;
+					overlay->ov_status = OL_CHANGESET_PRE_APPLY_ERROR;
+				}
+				else
+					overlay->ov_status = OL_CHANGESET_POST_APPLY_ERROR;
+
+				goto out_firmware_free;
+			}
+			overlay->ov_status = OL_CHANGESET_APPLIED;
 		}
 		else
 			return -EPERM;
 	}
+
 	return count;
-out_err:
+
+out_firmware_free:
 	release_firmware(overlay->fw);
 	overlay->fw = NULL;
-
-	overlay->path[0] = '\0';
 	
-	overlay->dtbo_size = 0;
-	
-	return -EPERM;
+out_err:
+	return err;
 }
 
 static ssize_t cfs_overlay_item_status_show(struct config_item *item,
 					    char *page)
 {
-	return sprintf(page, "%d\n", to_cfs_overlay_item(item)->ov_id >= 0 ?
-					1 : 0);
+	return sprintf(page, "%d\n", to_cfs_overlay_item(item)->ov_status);
 }
 
 CONFIGFS_ATTR(cfs_overlay_item_, path);
@@ -264,6 +291,7 @@ static struct config_item
 	if (!overlay)
 		return ERR_PTR(-ENOMEM);
 	overlay->ov_id = -1;
+	overlay->ov_status = OL_IDLE;
 	config_item_init_type_name(&overlay->item, name, &cfs_overlay_type);
 
 	return &overlay->item;
