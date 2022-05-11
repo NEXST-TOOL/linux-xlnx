@@ -2,7 +2,7 @@
 # Kconfig for Xilinx firmwares
 
 menu "Zynq MPSoC Firmware Drivers"
-	depends on ARCH_ZYNQMP
+	depends on ARCH_ZYNQMP || ICT_SERVE
 
 config ZYNQMP_FIRMWARE
 	bool "Enable Xilinx Zynq MPSoC firmware interface"

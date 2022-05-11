@@ -15,6 +15,8 @@
 #include <linux/slab.h>
 #include <linux/string.h>
 #include <linux/io.h>
+#include <linux/module.h>
+#include <linux/of_platform.h>
 
 static void __iomem *zynq_clkc_base;
 
@@ -255,7 +257,11 @@ err:
 		clks[clk1] = ERR_PTR(-ENOMEM);
 }
 
+#if defined(CONFIG_ICT_SERVE)
+static int zynq_clk_setup(struct device_node *np)
+#else
 static void __init zynq_clk_setup(struct device_node *np)
+#endif
 {
 	int i;
 	u32 tmp;
@@ -617,8 +623,13 @@ static void __init zynq_clk_setup(struct device_node *np)
 	clk_data.clks = clks;
 	clk_data.clk_num = ARRAY_SIZE(clks);
 	of_clk_add_provider(np, of_clk_src_onecell_get, &clk_data);
+
+#if defined(CONFIG_ICT_SERVE)
+	return 0;
+#endif
 }
 
+#if !defined(CONFIG_ICT_SERVE)
 CLK_OF_DECLARE(zynq_clkc, "xlnx,ps7-clkc", zynq_clk_setup);
 
 void __init zynq_clock_init(void)
@@ -659,3 +670,61 @@ np_err:
 	of_node_put(np);
 	BUG();
 }
+#else
+static int zynq_clock_probe(struct platform_device *pdev)
+{
+	int ret;
+	struct device *dev = &pdev->dev;
+
+	struct device_node *np;
+	struct device_node *slcr;
+	struct resource res;
+
+	np = of_find_compatible_node(NULL, NULL, "xlnx,ps7-clkc");
+	if (!np) {
+		pr_err("%s: clkc node not found\n", __func__);
+		return -ENODEV;
+	}
+
+	if (of_address_to_resource(np, 0, &res)) {
+		pr_err("%pOFn: failed to get resource\n", np);
+		of_node_put(np);
+		return -ENODEV;
+	}
+
+	slcr = of_get_parent(np);
+
+	if (slcr->data) {
+		zynq_clkc_base = (__force void __iomem *)slcr->data + res.start;
+	} else {
+		pr_err("%pOFn: Unable to get I/O memory\n", np);
+		of_node_put(slcr);
+		of_node_put(np);
+		return -ENODEV;
+	}
+
+	pr_info("%s: clkc starts at %p\n", __func__, zynq_clkc_base);
+
+	of_node_put(slcr);
+	of_node_put(np);
+
+	ret = zynq_clk_setup(dev->of_node);
+
+	return ret;
+}
+
+static const struct of_device_id zynq_clock_of_match[] = {
+	{.compatible = "xlnx,ps7-clkc"},
+	{},
+};
+MODULE_DEVICE_TABLE(of, zynq_clock_of_match);
+
+static struct platform_driver zynq_clock_driver = {
+	.driver = {
+		.name = "zynq_clock",
+		.of_match_table = zynq_clock_of_match,
+	},
+	.probe = zynq_clock_probe,
+};
+module_platform_driver(zynq_clock_driver);
+#endif

@@ -20,6 +20,8 @@ config ICT_SERVE
        select MACB
        select XILINX_AXI_EMAC
        select DP83867_PHY
+       select MFD_SYSCON
+       select ZYNQMP_FIRMWARE
        help
          This enables support for ICT SERVE prototyping platforms.
          SERVE.r (PYNQ z2): Xilinx Zynq
