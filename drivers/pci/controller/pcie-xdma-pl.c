@@ -101,8 +101,9 @@
 
 /* Number of MSI IRQs */
 #define XILINX_NUM_MSI_IRQS		64
-#define INTX_NUM              4
-#define MSI_GIC_AFFINITY      2
+#define INTX_NUM                         4
+#define MSI_GIC_AFFINITY                 2
+#define MAXIMUM_HWIRQ_NUM               32
 
 enum msi_mode {
 	MSI_DECD_MODE = 1,
@@ -110,17 +111,17 @@ enum msi_mode {
 };
 
 enum msi_decd_mode_order {
-  REQ_DECD_MISC = 0,
-  REQ_DECD_MSI0,
-  REQ_DECD_MSI1,
-  REQ_DECD_TOTAL,
+	REQ_DECD_MISC = 0,
+	REQ_DECD_MSI0,
+	REQ_DECD_MSI1,
+	REQ_DECD_TOTAL,
 };
 
 struct xilinx_msi {
-  unsigned long *msi_irq_in_use;
+	unsigned long *msi_irq_in_use;
 	struct mutex lock;		/* protect bitmap variable */
 	unsigned long msi_pages;
-  phys_addr_t msi_phys;
+	phys_addr_t msi_phys;
 };
 
 /**
@@ -137,7 +138,7 @@ struct xilinx_msi {
  */
 struct xilinx_pcie_port {
 	void __iomem *reg_base;
-  struct list_head list;
+	struct list_head list;
 	struct xilinx_pcie *pcie;
 	u32 irq;
 	u32 slot;
@@ -169,7 +170,7 @@ struct xilinx_pcie {
 		resource_size_t io;
 	} offset;
 	struct list_head ports;
-  int nr_cpus;
+	int nr_cpus;
 	struct irq_domain *msi_domain;
 };
 
@@ -276,7 +277,7 @@ static int xilinx_pcie_config_read(struct pci_bus *bus, unsigned int devfn,
  * @bus: PCI Bus structure
  * @devfn: device/function
  * @where: address offset
- * @size: write size (might be 8-bit byte, 16-bit shord word, 32-bit long word and 64-bit quad word)
+ * @size: write size (might be 8-bit byte, 16-bit short word, 32-bit long word and 64-bit quad word)
  * @val: write data
  *
  * Return: 'true' on success and 'false' if invalid device is found
@@ -437,12 +438,12 @@ static irqreturn_t xilinx_pcie_intr_handler(int irq, void *data)
 
 static int hwirq_to_cpu(unsigned long hwirq)
 {
-  return (hwirq % MSI_GIC_AFFINITY);
+	return (hwirq % MSI_GIC_AFFINITY);
 }
 
 static unsigned long hwirq_to_canonical_hwirq(unsigned long hwirq)
 {
-  return hwirq - hwirq_to_cpu(hwirq);
+	return hwirq - hwirq_to_cpu(hwirq);
 }
 
 static void xilinx_pcie_handle_msi_irq(struct xilinx_pcie_port *port,
@@ -459,9 +460,9 @@ static void xilinx_pcie_handle_msi_irq(struct xilinx_pcie_port *port,
 		for_each_set_bit(bit, &status, 32) {
 			pcie_write(port, 1 << bit, status_reg);
 			virq = irq_find_mapping(port->pcie->msi_domain, 
-          (bit + (XILINX_NUM_MSI_IRQS * port->slot)));
+			           (bit + (XILINX_NUM_MSI_IRQS * port->slot)));
 			if (virq)
-          generic_handle_irq(virq);
+			        generic_handle_irq(virq);
 		}
 	}
 }
@@ -487,47 +488,53 @@ static void xilinx_pcie_msi_handler_low(struct irq_desc *desc)
 }
 
 static int xilinx_pcie_msi_prepare(struct irq_domain *domain, 
-    struct device *dev, int nvec, msi_alloc_info_t *arg)
+                                   struct device *dev, int nvec, msi_alloc_info_t *arg)
 {
-  memset(arg, 0, sizeof(*arg));
-  arg->scratchpad[0].ptr = to_pci_dev(dev);
-
-  return 0;
+	memset(arg, 0, sizeof(*arg));
+	arg->scratchpad[0].ptr = to_pci_dev(dev);
+	
+	return 0;
 }
 
 static irq_hw_number_t 
 xilinx_pcie_msi_get_hwirq(struct msi_domain_info *info, msi_alloc_info_t *arg)
 {
-  struct pci_dev *pdev = (struct pci_dev *)arg->scratchpad[0].ptr; 
+	struct pci_dev *pdev = (struct pci_dev *)arg->scratchpad[0].ptr; 
 	struct xilinx_pcie_port *port;
 	struct xilinx_msi *msi;
 	irq_hw_number_t pos;
-
-  /*find PCIe port for such device*/
-  port = xilinx_pcie_find_port(pdev->bus, pdev->devfn);
-  if(!port)
-    return -EINVAL;
-
-  msi = &port->msi;
-
-  /*find MSI hwirq*/
-  mutex_lock(&msi->lock);
-
-	pos = bitmap_find_next_zero_area(msi->msi_irq_in_use, 
-      XILINX_NUM_MSI_IRQS, 0, MSI_GIC_AFFINITY, 0);
-	if (pos >= XILINX_NUM_MSI_IRQS) {
-    mutex_unlock(&msi->lock);
-    return -ENOSPC;
-  }
+	
+	/*find PCIe port for such device*/
+	port = xilinx_pcie_find_port(pdev->bus, pdev->devfn);
+	if(!port)
+	        return -EINVAL;
 		
-  bitmap_set(msi->msi_irq_in_use, pos, MSI_GIC_AFFINITY);
+	msi = &port->msi;
+	
+	/*find available hwirq number*/
+	mutex_lock(&msi->lock);
+	pos = bitmap_find_next_zero_area(msi->msi_irq_in_use, 
+	        XILINX_NUM_MSI_IRQS, 0, MSI_GIC_AFFINITY, 0);
 
-  if (pos && (!((pos >> 1) & 0x01)))
-    pos++;
-
-  mutex_unlock(&msi->lock);
-
-  /*maintaing MSI IRQs of each port in the root bus MSI domain*/
+	// currently only 16 MSI IRQs (#0 - #15) are available in each port
+	// and each MSI IRQ occupies adjacent hwirq numbers 
+	// (e.g., MSI IRQ 0 occupies hwirq 0 and 1), mainly for CPU affinity
+	// As a result, at most 32 hwirq numbers are allowed for each port
+	if (pos >= MAXIMUM_HWIRQ_NUM) {
+		mutex_unlock(&msi->lock);
+		return -ENOSPC;
+	}
+	
+	// make sure that the occupied hwirq numbers are aligned to MSI_GIC_AFFINITY
+	bitmap_set(msi->msi_irq_in_use, pos, MSI_GIC_AFFINITY);
+	
+	// mainly used in case of MSI_GIC_AFFINITY == 2
+	if (pos && (!((pos >> 1) & 0x01)))
+	        pos++;
+	    
+	mutex_unlock(&msi->lock);
+	
+	/*maintaining MSI IRQs of each port in the root bus MSI domain*/
 	return (pos + (XILINX_NUM_MSI_IRQS * port->slot));
 }
 
@@ -536,44 +543,47 @@ static void xilinx_pcie_msi_free(struct irq_domain *domain,
 {
 	struct irq_data *data = irq_domain_get_irq_data(domain, virq);
 	struct msi_desc *desc = irq_data_get_msi_desc(data);
-  struct pci_dev *pdev = to_pci_dev(desc->dev); 
+	struct pci_dev *pdev = to_pci_dev(desc->dev); 
 
 	struct xilinx_pcie_port *port;
 	struct xilinx_msi *msi;
 
 	irq_hw_number_t pos;
-
-  port = xilinx_pcie_find_port(pdev->bus, pdev->devfn);
-  if(!port)
-    return;
-
-  msi = &port->msi;
-
-  pos = data->hwirq - (XILINX_NUM_MSI_IRQS * port->slot);
-
-  mutex_lock(&msi->lock);
-
-  bitmap_clear(msi->msi_irq_in_use, pos, MSI_GIC_AFFINITY);
-
-  mutex_unlock(&msi->lock);
+	
+	port = xilinx_pcie_find_port(pdev->bus, pdev->devfn);
+	if(!port)
+	        return;
+		
+	msi = &port->msi;
+	pos = data->hwirq - (XILINX_NUM_MSI_IRQS * port->slot);
+	// obeying the same rule of CPU affinity as in get_hwirq() func.
+	pos -= (pos & 0x01);
+	
+	mutex_lock(&msi->lock);	
+	bitmap_clear(msi->msi_irq_in_use, pos, MSI_GIC_AFFINITY);
+	mutex_unlock(&msi->lock);
 }
 
 static void xilinx_compose_msi_msg(struct irq_data *data, struct msi_msg *msg)
 {
 	struct msi_desc *desc = irq_data_get_msi_desc(data);
-  struct pci_dev *pdev = to_pci_dev(desc->dev); 
+	struct pci_dev *pdev = to_pci_dev(desc->dev); 
 
 	struct xilinx_pcie_port *port;
 	struct xilinx_msi *msi;
-
-  port = xilinx_pcie_find_port(pdev->bus, pdev->devfn);
-  if(!port)
-    return;
-
-  msi = &port->msi;
+	
+	port = xilinx_pcie_find_port(pdev->bus, pdev->devfn);
+	if(!port)
+	        return;
+		
+	msi = &port->msi;
 
 	msg->address_lo = lower_32_bits(msi->msi_phys);
 	msg->address_hi = upper_32_bits(msi->msi_phys);
+	// guarantee that MSI IRQs with odd hwirq number 
+	// would invoke interrupt signal 
+	// via the vector32to63 port 
+	// that is bounden to CPU core #1 for affinity 
 	msg->data = data->hwirq + ((data->hwirq & 0x1) << 5);
 }
 
@@ -581,39 +591,39 @@ static int xilinx_msi_set_affinity(struct irq_data *irq_data,
 				   const struct cpumask *mask, bool force)
 {
 	int target_cpu = cpumask_first(mask) % MSI_GIC_AFFINITY;
-  int curr_cpu;
-
-  curr_cpu = hwirq_to_cpu(irq_data->hwirq);
-  if(curr_cpu == target_cpu)
-    return IRQ_SET_MASK_OK_DONE;
-
-  /*Update MSI number to target the new CPU*/
-  irq_data->hwirq = hwirq_to_canonical_hwirq(irq_data->hwirq) + target_cpu;
-  
-  return IRQ_SET_MASK_OK;
+	int curr_cpu;
+	
+	curr_cpu = hwirq_to_cpu(irq_data->hwirq);
+	if(curr_cpu == target_cpu)
+	        return IRQ_SET_MASK_OK_DONE;
+		
+	/*Update MSI number to target the new CPU*/
+	irq_data->hwirq = hwirq_to_canonical_hwirq(irq_data->hwirq) + target_cpu;
+	
+	return IRQ_SET_MASK_OK;
 }
 
 static struct msi_domain_ops xilinx_msi_domain_ops = {
-  .get_hwirq = xilinx_pcie_msi_get_hwirq,
-  .msi_free = xilinx_pcie_msi_free,
-  .msi_prepare = xilinx_pcie_msi_prepare,
+	.get_hwirq = xilinx_pcie_msi_get_hwirq,
+	.msi_free = xilinx_pcie_msi_free,
+	.msi_prepare = xilinx_pcie_msi_prepare,
 };
 
 static struct irq_chip xilinx_msi_irq_chip = {
 	.name = "xdma:msi",
 	.irq_mask = pci_msi_mask_irq,
 	.irq_unmask = pci_msi_unmask_irq,
-  .irq_compose_msi_msg = xilinx_compose_msi_msg,
-  .irq_set_affinity = xilinx_msi_set_affinity,
+	.irq_compose_msi_msg = xilinx_compose_msi_msg,
+	.irq_set_affinity = xilinx_msi_set_affinity,
 };
 
 static struct msi_domain_info xilinx_msi_domain_info = {
 	.flags = (MSI_FLAG_USE_DEF_DOM_OPS | MSI_FLAG_USE_DEF_CHIP_OPS |
 		MSI_FLAG_MULTI_PCI_MSI | MSI_FLAG_PCI_MSIX),
-  .ops = &xilinx_msi_domain_ops,
+	.ops = &xilinx_msi_domain_ops,
 	.chip = &xilinx_msi_irq_chip,
-  .handler = handle_simple_irq,
-  .handler_name = "Xilinx MSI",
+	.handler = handle_simple_irq,
+	.handler_name = "Xilinx MSI",
 };
 
 /**
@@ -622,21 +632,21 @@ static struct msi_domain_info xilinx_msi_domain_info = {
  */
 static int xilinx_pcie_init_msi(struct xilinx_pcie_port *port)
 {
-  struct xilinx_msi *msi = &port->msi;
-  int size = BITS_TO_LONGS(XILINX_NUM_MSI_IRQS) * sizeof(long);
+	struct xilinx_msi *msi = &port->msi;
+	int size = BITS_TO_LONGS(XILINX_NUM_MSI_IRQS) * sizeof(long);
 
 	mutex_init(&msi->lock);
-
-  msi->msi_irq_in_use = kzalloc(size, GFP_KERNEL);
-  if (!msi->msi_irq_in_use)
-    return -ENOMEM;
+	
+	msi->msi_irq_in_use = kzalloc(size, GFP_KERNEL);
+	if (!msi->msi_irq_in_use)
+	        return -ENOMEM;
 
 	msi->msi_pages = __get_free_pages(GFP_KERNEL, 0);
 	msi->msi_phys = virt_to_phys((void *)msi->msi_pages);
 	pcie_write(port, upper_32_bits(msi->msi_phys), XILINX_PCIE_REG_MSIBASE1);
 	pcie_write(port, lower_32_bits(msi->msi_phys), XILINX_PCIE_REG_MSIBASE2);
-
-  return 0;
+	
+	return 0;
 }
 
 /**
@@ -753,13 +763,13 @@ static int xilinx_pcie_request_resources(struct xilinx_pcie *pcie)
 static void xilinx_pcie_init_port(struct xilinx_pcie_port *port)
 {
 	if (!xilinx_pcie_link_is_up(port))
-  {
+	{
 		dev_info(port->dev, "PCIe Link is DOWN\n");
-    xilinx_pcie_port_free(port);
-    return;
-  }
+		xilinx_pcie_port_free(port);
+		return;
+	}
 	
-  dev_info(port->dev, "PCIe Link is UP\n");
+	dev_info(port->dev, "PCIe Link is UP\n");
 
 	/* Disable all interrupts */
 	pcie_write(port, ~XILINX_PCIE_IDR_ALL_MASK,
@@ -767,8 +777,7 @@ static void xilinx_pcie_init_port(struct xilinx_pcie_port *port)
 
 	/* Clear pending interrupts */
 	pcie_write(port, pcie_read(port, XILINX_PCIE_REG_IDR) &
-			 XILINX_PCIE_IMR_ALL_MASK,
-		   XILINX_PCIE_REG_IDR);
+		XILINX_PCIE_IMR_ALL_MASK, XILINX_PCIE_REG_IDR);
 
 	/* Enable all interrupts */
 	pcie_write(port, XILINX_PCIE_IMR_ALL_MASK, XILINX_PCIE_REG_IMR);
@@ -782,8 +791,7 @@ static void xilinx_pcie_init_port(struct xilinx_pcie_port *port)
 
 	/* Enable the Bridge enable bit */
 	pcie_write(port, pcie_read(port, XILINX_PCIE_REG_RPSC) |
-			 XILINX_PCIE_REG_RPSC_BEN,
-		   XILINX_PCIE_REG_RPSC);
+		XILINX_PCIE_REG_RPSC_BEN, XILINX_PCIE_REG_RPSC);
 }
 
 /**
@@ -795,25 +803,25 @@ static void xilinx_pcie_init_port(struct xilinx_pcie_port *port)
  */
 static int xilinx_pcie_setup_msi_cpu_mask(int irq, int cpu)
 {
-  cpumask_var_t mask;
-  int err;
-
-  if (alloc_cpumask_var(&mask, GFP_KERNEL))
-  {
-    cpumask_clear(mask);
-    cpumask_set_cpu(cpu, mask);
-
-    err = irq_set_affinity(irq, mask);
-
-    if (err)
-			pr_err("Failed to set affinity for MSI GIC IRQ %d\n", irq);
-      
-    free_cpumask_var(mask);
-  }
-  else
-    err = -EINVAL;
-
-  return err;
+	cpumask_var_t mask;
+	int err;
+	
+	if (alloc_cpumask_var(&mask, GFP_KERNEL))
+	{
+		cpumask_clear(mask);
+		cpumask_set_cpu(cpu, mask);
+		
+		err = irq_set_affinity(irq, mask);
+		
+		if (err)
+		        pr_err("Failed to set affinity for MSI GIC IRQ %d\n", irq);
+			
+		free_cpumask_var(mask);
+	}
+	else
+	        err = -EINVAL;
+		
+	return err;
 }
 
 /**
@@ -830,35 +838,36 @@ static int xilinx_pcie_setup_irq(struct xilinx_pcie_port *port,
 	struct device *dev = pcie->dev;
 	struct platform_device *pdev = to_platform_device(dev);
 	int err, irq;
-
-  err = xilinx_pcie_init_irq_domain(port, node);
-  if (err) {
-    dev_err(dev, "failed to init PCIe IRQ domain\n");
-    return err;
-  }
+	
+	err = xilinx_pcie_init_irq_domain(port, node);
+	if (err) {
+		dev_err(dev, "failed to init PCIe IRQ domain\n");
+		return err;
+	}
 
 	/* MSI FIFO mode */
-  if (port->msi_mode == MSI_FIFO_MODE)
-  {
-    irq = platform_get_irq(pdev, port->slot);
+	if (port->msi_mode == MSI_FIFO_MODE)
+	{
+		irq = platform_get_irq(pdev, port->slot);
 		if (irq <= 0) {
 			dev_err(dev, "Unable to find IRQ line on port %d\n", port->slot);
 			return -ENXIO;
 		}
-    err = devm_request_irq(dev, irq, xilinx_pcie_intr_handler,
+		
+		err = devm_request_irq(dev, irq, xilinx_pcie_intr_handler,
 			       IRQF_SHARED | IRQF_NO_THREAD, "xilinx-pcie", port);
-	
-    if (err) {
-      dev_err(dev, "unable to request IRQ %d\n", irq);
-      return err;
-    }
+			       
+		if (err) {
+			dev_err(dev, "unable to request IRQ %d\n", irq);
+			return err;
+		}
 	}
-
-  /*MSI Decode mode (newly support)*/
-  else if (port->msi_mode == MSI_DECD_MODE)
-  {
-    /*request misc irq*/
-    irq = platform_get_irq(pdev, (port->slot * REQ_DECD_TOTAL + REQ_DECD_MISC));
+	
+	/*MSI Decode mode (newly support)*/
+	else if (port->msi_mode == MSI_DECD_MODE)
+	{
+		/*request misc irq*/
+		irq = platform_get_irq(pdev, (port->slot * REQ_DECD_TOTAL + REQ_DECD_MISC));
 		if (irq <= 0) {
 			dev_err(dev, "Unable to find misc IRQ line\n");
 			return irq;
@@ -869,39 +878,38 @@ static int xilinx_pcie_setup_irq(struct xilinx_pcie_port *port,
 			dev_err(dev, "unable to request misc IRQ line of port %d\n", port->slot);
 			return err;
 		}
-
-    /*request msi0 req*/
-    irq = platform_get_irq(pdev, (port->slot * REQ_DECD_TOTAL + REQ_DECD_MSI0));
+		
+		/*request msi0 req*/
+		irq = platform_get_irq(pdev, (port->slot * REQ_DECD_TOTAL + REQ_DECD_MSI0));
 		if (irq <= 0) {
 			dev_err(dev, "Unable to find msi0 IRQ line\n");
 			return irq;
 		}
-
+		
 		irq_set_chained_handler_and_data(irq, xilinx_pcie_msi_handler_low, port);
-
-    err = xilinx_pcie_setup_msi_cpu_mask(irq, 0);
-    if (err)
-    {
-      irq_set_chained_handler_and_data(irq, NULL, NULL);
-      return err;
-    }
-
-    /*request msi1 req*/
-    irq = platform_get_irq(pdev, (port->slot * REQ_DECD_TOTAL + REQ_DECD_MSI1));
+		err = xilinx_pcie_setup_msi_cpu_mask(irq, 0);
+		if (err)
+		{
+			irq_set_chained_handler_and_data(irq, NULL, NULL);
+			return err;
+		}
+		
+		/*request msi1 req*/
+		irq = platform_get_irq(pdev, (port->slot * REQ_DECD_TOTAL + REQ_DECD_MSI1));
 		if (irq <= 0) {
 			dev_err(dev, "Unable to find msi1 IRQ line\n");
 			return irq;
 		}
-
+		
 		irq_set_chained_handler_and_data(irq, xilinx_pcie_msi_handler_high, port);
-
-    err = xilinx_pcie_setup_msi_cpu_mask(irq, 1);
-    if (err)
-    {
-      irq_set_chained_handler_and_data(irq, NULL, NULL);
-      return err;
-    }
-  }
+		
+		err = xilinx_pcie_setup_msi_cpu_mask(irq, 1);
+		if (err)
+		{
+			irq_set_chained_handler_and_data(irq, NULL, NULL);
+			return err;
+		}
+	}
 
 	return 0;
 }
@@ -939,8 +947,8 @@ static int xilinx_pcie_parse_port(struct xilinx_pcie *pcie,
 
 	port->slot = slot;
 	port->pcie = pcie;
-
-  /*check MSI interrupt mode*/
+	
+	/*check MSI interrupt mode*/
 	val = pcie_read(port, XILINX_PCIE_REG_BIR);
 	val = (val >> XILINX_PCIE_FIFO_SHIFT) & MSI_DECD_MODE;
 	mode_val = pcie_read(port, XILINX_PCIE_REG_VSEC) &
@@ -1058,8 +1066,8 @@ static int xilinx_pcie_parse_dt(struct xilinx_pcie *pcie)
 	/* enable each port, and then check link status */
 	list_for_each_entry_safe(port, tmp, &pcie->ports, list)
 		xilinx_pcie_init_port(port);
-
-  return 0;
+		
+	return 0;
 }
 
 /**
@@ -1075,9 +1083,9 @@ static int xilinx_pcie_probe(struct platform_device *pdev)
 
 	struct pci_host_bridge *bridge;
 	int err;
-
-  struct fwnode_handle *fwnode;
-  struct msi_domain_info *info;
+	
+	struct fwnode_handle *fwnode;
+	struct msi_domain_info *info;
 
 	/*check if Device Tree Node is available*/
 	if (!dev->of_node)
@@ -1094,22 +1102,22 @@ static int xilinx_pcie_probe(struct platform_device *pdev)
 	pcie->dev = dev;
 	platform_set_drvdata(pdev, pcie);
 	INIT_LIST_HEAD(&pcie->ports);
-    
-  /*setup PCIe MSI domain for root bus*/
+	
+	/*setup PCIe MSI domain for root bus*/
 	fwnode = of_node_to_fwnode(dev->of_node);
-
-  info = devm_kzalloc(dev, sizeof(*info), GFP_KERNEL);
-  if(!info)
-    return -ENOMEM;
-
-  memcpy(info, &xilinx_msi_domain_info, sizeof(*info));
-  info->chip_data = pcie;
-
-  pcie->msi_domain = pci_msi_create_irq_domain(fwnode, info, NULL);
-  if (!pcie->msi_domain) {
-    dev_err(dev, "failed to create MSI domain");
-    return -ENOMEM;
-  }
+	
+	info = devm_kzalloc(dev, sizeof(*info), GFP_KERNEL);
+	if(!info)
+	        return -ENOMEM;
+		
+	memcpy(info, &xilinx_msi_domain_info, sizeof(*info));
+	info->chip_data = pcie;
+	
+	pcie->msi_domain = pci_msi_create_irq_domain(fwnode, info, NULL);
+	if (!pcie->msi_domain) {
+		dev_err(dev, "failed to create MSI domain");
+		return -ENOMEM;
+	}
 
 	/*setup root complex and root ports by parsing device tree*/
 	err = xilinx_pcie_parse_dt(pcie);
