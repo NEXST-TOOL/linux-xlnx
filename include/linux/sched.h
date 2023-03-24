@@ -735,6 +735,13 @@ struct task_struct {
 	unsigned int			saved_state;
 #endif
 
+#ifdef CONFIG_CGROUP_DSID
+    unsigned int dsid;
+#endif
+
+	/* -1 unrunnable, 0 runnable, >0 stopped: */
+	volatile long			state;
+
 	/*
 	 * This begins the randomizable portion of task_struct. Only
 	 * scheduling-critical items should be added above here.
