@@ -76,8 +76,6 @@ static ssize_t cfs_overlay_item_path_store(struct config_item *item,
 {
 	struct cfs_overlay_item *overlay = to_cfs_overlay_item(item);
 	const char *p = page;
-	char *s;
-	int err;
 
 	/* if it's set do not allow changes */
 	if (overlay->path[0] != '\0' || overlay->dtbo_size > 0)
@@ -87,43 +85,83 @@ static ssize_t cfs_overlay_item_path_store(struct config_item *item,
 	count = snprintf(overlay->path, sizeof(overlay->path) - 1, "%s", p);
 	overlay->path[sizeof(overlay->path) - 1] = '\0';
 
-	/* strip trailing newlines */
-	s = overlay->path + strlen(overlay->path);
-	while (s > overlay->path && *--s == '\n')
-		*s = '\0';
-
-	pr_debug("%s: path is '%s'\n", __func__, overlay->path);
-
-	err = request_firmware(&overlay->fw, overlay->path, NULL);
-	if (err != 0)
-		goto out_err;
-
-	overlay->dtbo_size = overlay->fw->size;
-	err = create_overlay(overlay, (void *)overlay->fw->data);
-	if (err < 0)
-		goto out_err;
-
 	return count;
+}
 
+static ssize_t cfs_overlay_item_status_store(struct config_item *item,
+					    const char *page, size_t count)
+{
+	struct cfs_overlay_item *overlay = to_cfs_overlay_item(item);
+	ssize_t  status;
+	unsigned long value;
+	char *s;
+	int err;
+	
+	/*obtain status value from configfs*/
+	status = kstrtoul(page, 10, &value);
+	if (status)
+		return -EPERM;
+	
+	if (value == 0) {                       //removing dtbo
+		if (overlay->ov_id >= 0) {      //overlay MUST be available
+			of_overlay_remove(&overlay->ov_id);
+                        
+			if (overlay->fw)
+				release_firmware(overlay->fw);
+			
+			overlay->ov_id = -1;
+		}
+		else
+			return -EPERM;
+	}
+	else {                                  //building dtbo
+		if (overlay->ov_id == -1) {     //overlay MUST be unavailable
+			if(overlay->path[0] == '\0')
+				return -EPERM;
+			
+			/* strip trailing newlines */
+			s = overlay->path + strlen(overlay->path);
+			while (s > overlay->path && *--s == '\n')
+				*s = '\0';
+			
+			pr_debug("%s: path is '%s'\n", __func__, overlay->path);
+			
+			err = request_firmware(&overlay->fw, overlay->path, NULL);
+			if (err != 0)
+				goto out_err;
+			
+			pr_debug("%s: loaded dtbo size '%ld'\n", __func__, overlay->fw->size);
+			
+			overlay->dtbo_size = overlay->fw->size;
+			
+			err = create_overlay(overlay, (void *)overlay->fw->data);
+			if (err < 0)
+				goto out_err;
+		}
+		else
+			return -EPERM;
+	}
+	return count;
 out_err:
-
 	release_firmware(overlay->fw);
 	overlay->fw = NULL;
 
 	overlay->path[0] = '\0';
-
-	return count;
+	
+	overlay->dtbo_size = 0;
+	
+	return -EPERM;
 }
 
 static ssize_t cfs_overlay_item_status_show(struct config_item *item,
 					    char *page)
 {
-	return sprintf(page, "%s\n", to_cfs_overlay_item(item)->ov_id >= 0 ?
-					"applied" : "unapplied");
+	return sprintf(page, "%d\n", to_cfs_overlay_item(item)->ov_id >= 0 ?
+					1 : 0);
 }
 
 CONFIGFS_ATTR(cfs_overlay_item_, path);
-CONFIGFS_ATTR_RO(cfs_overlay_item_, status);
+CONFIGFS_ATTR(cfs_overlay_item_, status);
 
 static struct configfs_attribute *cfs_overlay_attrs[] = {
 	&cfs_overlay_item_attr_path,

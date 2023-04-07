@@ -12,6 +12,7 @@
 #include <linux/device.h>
 #include <linux/err.h>
 #include <linux/i2c.h>
+#include <linux/i2c-mux.h>
 #include <linux/module.h>
 #include <linux/of.h>
 #include <linux/of_device.h>
@@ -230,29 +231,75 @@ static int of_i2c_notify(struct notifier_block *nb, unsigned long action,
 			 void *arg)
 {
 	struct of_reconfig_data *rd = arg;
+	struct i2c_mux_core *mux;
 	struct i2c_adapter *adap;
 	struct i2c_client *client;
 
+	int ret;
+	u32 chan_id;
+
 	switch (of_reconfig_get_state_change(action, rd)) {
 	case OF_RECONFIG_CHANGE_ADD:
+
 		adap = of_find_i2c_adapter_by_node(rd->dn->parent);
-		if (adap == NULL)
+
+		client = of_find_i2c_device_by_node(rd->dn->parent);
+		if (client == NULL)
+			return NOTIFY_OK;	/* not for i2c devices */
+
+		mux = i2c_get_clientdata(client);
+
+		if ( (adap == NULL) && (mux == NULL) ) {
+			put_device(&client->dev);
 			return NOTIFY_OK;	/* not for us */
-
-		if (of_node_test_and_set_flag(rd->dn, OF_POPULATED)) {
-			put_device(&adap->dev);
-			return NOTIFY_OK;
 		}
 
-		client = of_i2c_register_device(adap, rd->dn);
-		if (IS_ERR(client)) {
-			dev_err(&adap->dev, "failed to create client for '%pOF'\n",
-				 rd->dn);
+		//the parent MUST be either an adapter (bus) or a MUX
+
+		if (adap) {       //current node is I2C device (MUX or device)
+			if (of_node_test_and_set_flag(rd->dn, OF_POPULATED)) {
+				put_device(&adap->dev);
+				return NOTIFY_OK;
+			}
+
+			client = of_i2c_register_device(adap, rd->dn);
+			if (IS_ERR(client)) {
+				dev_err(&adap->dev, "failed to create client for '%pOF'\n",
+						rd->dn);
+				put_device(&adap->dev);
+				of_node_clear_flag(rd->dn, OF_POPULATED);
+				return notifier_from_errno(PTR_ERR(client));
+			}
 			put_device(&adap->dev);
-			of_node_clear_flag(rd->dn, OF_POPULATED);
-			return notifier_from_errno(PTR_ERR(client));
 		}
-		put_device(&adap->dev);
+
+		else if (mux) {        //current node is an I2C mux channel
+			if (of_property_read_u32(rd->dn, "reg", &chan_id)) {
+				put_device(&client->dev);
+				return NOTIFY_OK;
+			}  /* no available channel ID in DTBO */
+
+			if (chan_id >= mux->max_adapters) {
+				put_device(&client->dev);
+				return NOTIFY_OK;
+			}  /* channel ID CANNOT exceed the maximum adapter number */
+
+			if (of_node_test_and_set_flag(rd->dn, OF_POPULATED)) {
+				put_device(&client->dev);
+				return NOTIFY_OK;
+			}
+
+			ret = i2c_mux_add_adapter(mux, 0, chan_id, 0);
+			if (ret) {
+				dev_err(&client->dev, "failed to create adapter for '%pOF'\n",
+					rd->dn);
+				put_device(&client->dev);
+				of_node_clear_flag(rd->dn, OF_POPULATED);
+				return notifier_from_errno(ret);
+			}
+			put_device(&client->dev);
+		}
+
 		break;
 	case OF_RECONFIG_CHANGE_REMOVE:
 		/* already depopulated? */
@@ -261,14 +308,48 @@ static int of_i2c_notify(struct notifier_block *nb, unsigned long action,
 
 		/* find our device by node */
 		client = of_find_i2c_device_by_node(rd->dn);
-		if (client == NULL)
-			return NOTIFY_OK;	/* no? not meant for us */
 
-		/* unregister takes one ref away */
-		i2c_unregister_device(client);
+		if (client == NULL) {    //remove an I2C MUX channel
+			/* find parent I2C device */
+			client = of_find_i2c_device_by_node(rd->dn->parent);
 
-		/* and put the reference of the find */
-		put_device(&client->dev);
+			if (client == NULL)
+				return NOTIFY_OK; /* not for us */
+			
+			mux = i2c_get_clientdata(client);
+			
+			if (mux == NULL) {
+				put_device(&client->dev);
+				return NOTIFY_OK; /* parent device is NOT an I2C MUX */
+			}
+			
+			/* find I2C channel adapter of current device */
+			adap = of_find_i2c_adapter_by_node(rd->dn);
+
+			if (adap == NULL) {
+				put_device(&client->dev);
+				return NOTIFY_OK;
+			}  /* current device is NOT registered as an adapter */
+
+			/* get channel ID */
+			chan_id = i2c_mux_check_adapter(adap);
+			put_device(&adap->dev);
+
+			/* remove I2C mux channel */
+			i2c_mux_del_adapter(mux, chan_id);
+
+			/* and put the reference of the find */
+			put_device(&client->dev);
+		}
+
+		else {    //remove an I2C device (MUX or device)
+			
+			/* unregister takes one ref away */
+			i2c_unregister_device(client);
+			
+			/* and put the reference of the find */
+			put_device(&client->dev);
+		}
 		break;
 	}
 

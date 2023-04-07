@@ -31,6 +31,13 @@
 /* Max HashMap Order for PM API feature check (1<<7 = 128) */
 #define PM_API_FEATURE_CHECK_MAX_ORDER  7
 
+#ifdef CONFIG_ICT_SERVE
+#include <asm/sbi.h>
+#define SERVE_EXT_PM  0x09000000
+#endif
+
+static unsigned long register_address;
+
 /* CRL registers and bitfields */
 #define CRL_APB_BASE			0xFF5E0000U
 /* BOOT_PIN_CTRL- Used to control the mode pins after boot */
@@ -104,6 +111,7 @@ static int zynqmp_pm_ret_code(u32 ret_status)
 	}
 }
 
+#ifdef CONFIG_ARCH_ZYNQMP
 static noinline int do_fw_call_fail(u64 arg0, u64 arg1, u64 arg2, u64 arg3,
 				    u32 *ret_payload)
 {
@@ -175,7 +183,26 @@ static noinline int do_fw_call_hvc(u64 arg0, u64 arg1, u64 arg2, u64 arg3,
 
 	return zynqmp_pm_ret_code((enum pm_ret_status)res.a0);
 }
+#else
+static noinline int do_sbi_call(u64 pm_api_id, u64 arg0, u64 arg1, 
+		u64 arg2, u64 arg3, u32 *ret_payload)
+{
+	struct sbiret ret;
 
+	ret = sbi_ecall(SERVE_EXT_PM, pm_api_id, arg0, arg1, arg2, arg3, 0, 0);
+
+	if (ret_payload) {
+		ret_payload[0] = lower_32_bits(ret.a0);
+		ret_payload[1] = upper_32_bits(ret.a0);
+		ret_payload[2] = lower_32_bits(ret.a1);
+		ret_payload[3] = upper_32_bits(ret.a1);
+	}
+
+	return zynqmp_pm_ret_code((enum pm_ret_status)ret.a0);
+}
+#endif
+
+#ifdef CONFIG_ARCH_ZYNQMP
 static int __do_feature_check_call(const u32 api_id, u32 *ret_payload)
 {
 	int ret;
@@ -246,6 +273,7 @@ int zynqmp_pm_feature(const u32 api_id)
 	return ret;
 }
 EXPORT_SYMBOL_GPL(zynqmp_pm_feature);
+#endif
 
 /**
  * zynqmp_pm_is_function_supported() - Check whether given IOCTL/QUERY function
@@ -325,6 +353,7 @@ int zynqmp_pm_invoke_fn(u32 pm_api_id, u32 arg0, u32 arg1,
 	 * Added SIP service call Function Identifier
 	 * Make sure to stay in x0 register
 	 */
+#ifdef CONFIG_ARCH_ZYNQMP
 	u64 smc_arg[4];
 	int ret;
 
@@ -340,6 +369,9 @@ int zynqmp_pm_invoke_fn(u32 pm_api_id, u32 arg0, u32 arg1,
 
 	return do_fw_call(smc_arg[0], smc_arg[1], smc_arg[2], smc_arg[3],
 			  ret_payload);
+#else
+	return do_sbi_call(pm_api_id, arg0, arg1, arg2, arg3, ret_payload);
+#endif
 }
 
 static u32 pm_api_version;
@@ -409,6 +441,7 @@ int zynqmp_pm_get_chipid(u32 *idcode, u32 *version)
 }
 EXPORT_SYMBOL_GPL(zynqmp_pm_get_chipid);
 
+#ifdef CONFIG_ARCH_ZYNQMP
 /**
  * zynqmp_pm_get_trustzone_version() - Get secure trustzone firmware version
  * @version:	Returned version value
@@ -464,6 +497,7 @@ static int get_set_conduit_method(struct device_node *np)
 
 	return 0;
 }
+#endif
 
 /**
  * zynqmp_pm_query_data() - Get query data from firmware
@@ -2823,9 +2857,11 @@ static int zynqmp_firmware_probe(struct platform_device *pdev)
 	struct device_node *np;
 	int ret;
 
+#ifdef CONFIG_ARCH_ZYNQMP
 	ret = get_set_conduit_method(dev->of_node);
 	if (ret)
 		return ret;
+#endif
 
 	np = of_find_compatible_node(NULL, NULL, "xlnx,zynqmp");
 	if (!np) {
@@ -2862,6 +2898,7 @@ static int zynqmp_firmware_probe(struct platform_device *pdev)
 	pr_info("%s Platform Management API v%d.%d\n", __func__,
 		pm_api_version >> 16, pm_api_version & 0xFFFF);
 
+#ifdef CONFIG_ARCH_ZYNQMP
 	/* Check trustzone version number */
 	ret = zynqmp_pm_get_trustzone_version(&pm_tz_version);
 	if (ret)
@@ -2875,6 +2912,7 @@ static int zynqmp_firmware_probe(struct platform_device *pdev)
 
 	pr_info("%s Trustzone version v%d.%d\n", __func__,
 		pm_tz_version >> 16, pm_tz_version & 0xFFFF);
+#endif
 
 	ret = mfd_add_devices(&pdev->dev, PLATFORM_DEVID_NONE, firmware_devs,
 			      ARRAY_SIZE(firmware_devs), NULL, 0, NULL);

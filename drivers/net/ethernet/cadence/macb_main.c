@@ -801,6 +801,11 @@ static void macb_mac_link_up(struct phylink_config *config,
 		gem_writel(bp, HS_MAC_CONFIG, GEM_BFINS(HS_MAC_SPEED, HS_SPEED_10000M,
 							gem_readl(bp, HS_MAC_CONFIG)));
 
+	if ((bp->phy_interface == PHY_INTERFACE_MODE_SGMII) &&
+	    (bp->caps & MACB_CAPS_PCS))
+		gem_writel(bp, PCSCNTRL,
+			   gem_readl(bp, PCSCNTRL) & ~GEM_BIT(PCSAUTONEG));
+
 	spin_unlock_irqrestore(&bp->lock, flags);
 
 	/* Enable Rx and Tx */
@@ -2766,7 +2771,6 @@ static void macb_init_hw(struct macb *bp)
 			   GEM_BF(WTRMRK, bp->rx_watermark)) |
 			   GEM_BIT(ENCUTTHRU));
 	}
-
 }
 
 /* The hash address register is 64 bits long and takes up two
@@ -4153,6 +4157,11 @@ static int macb_init(struct platform_device *pdev)
 	if (bp->phy_interface == PHY_INTERFACE_MODE_SGMII)
 		val |= GEM_BIT(SGMIIEN) | GEM_BIT(PCSSEL);
 	macb_writel(bp, NCFGR, val);
+
+	if ((bp->phy_interface == PHY_INTERFACE_MODE_SGMII) &&
+	    (bp->caps & MACB_CAPS_PCS))
+		gem_writel(bp, PCSCNTRL,
+			   gem_readl(bp, PCSCNTRL) & ~GEM_BIT(PCSAUTONEG));
 
 	return 0;
 }

@@ -449,7 +449,7 @@ static ssize_t ina226_alarm_show(struct device *dev,
 
 	alarm = (regval & BIT(attr->index)) &&
 		(regval & INA226_ALERT_FUNCTION_FLAG);
-	return sysfs_emit(buf, "%d\n", alarm);
+	return snprintf(buf, PAGE_SIZE, "%d\n", alarm);
 }
 
 /*
