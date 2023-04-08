@@ -36,8 +36,6 @@
 #define SERVE_EXT_PM  0x09000000
 #endif
 
-static unsigned long register_address;
-
 /* CRL registers and bitfields */
 #define CRL_APB_BASE			0xFF5E0000U
 /* BOOT_PIN_CTRL- Used to control the mode pins after boot */
