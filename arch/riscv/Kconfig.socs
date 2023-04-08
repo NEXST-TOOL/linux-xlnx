@@ -80,4 +80,23 @@ config SOC_CANAAN_K210_DTB_SOURCE
 
 endif # SOC_CANAAN
 
+config ICT_SERVE
+       bool "ICT SERVE series platforms"
+       select SIFIVE_PLIC
+       select SERIAL_XILINX_PS_UART
+       select SERIAL_XILINX_PS_UART_CONSOLE
+       select SERIAL_UARTLITE
+       select SERIAL_UARTLITE_CONSOLE
+       select MACB
+       select XILINX_AXI_EMAC
+       select DP83867_PHY
+       select MFD_SYSCON
+       select ZYNQMP_FIRMWARE
+       help
+         This enables support for ICT SERVE prototyping platforms.
+         SERVE.r (PYNQ z2): Xilinx Zynq
+         SERVE.s (ultraz): Xilinx Zynq MPSoC XCZU2EG
+         SERVE.i (nf/Fidus): Xilinx Zynq MPSoC XCZU19EG
+         SERVE.h (Xilinx VCU128): Xilinx Virtex UtralScale+ XCVU37P with HBM.
+
 endmenu # "SoC selection"

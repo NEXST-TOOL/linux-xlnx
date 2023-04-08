@@ -694,3 +694,5 @@ source "drivers/cpuidle/Kconfig"
 endmenu # "CPU Power Management"
 
 source "arch/riscv/kvm/Kconfig"
+
+source "drivers/firmware/Kconfig"

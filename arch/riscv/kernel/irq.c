@@ -10,6 +10,8 @@
 #include <linux/seq_file.h>
 #include <asm/smp.h>
 
+extern int zynq_early_slcr_init(void);
+
 int arch_show_interrupts(struct seq_file *p, int prec)
 {
 	show_ipi_stats(p, prec);
@@ -18,6 +20,7 @@ int arch_show_interrupts(struct seq_file *p, int prec)
 
 void __init init_IRQ(void)
 {
+	zynq_early_slcr_init();
 	irqchip_init();
 	if (!handle_arch_irq)
 		panic("No interrupt controller found.");
