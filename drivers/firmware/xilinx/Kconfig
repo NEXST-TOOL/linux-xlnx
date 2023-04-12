@@ -6,7 +6,7 @@ menu "Zynq MPSoC Firmware Drivers"
 
 config ZYNQMP_FIRMWARE
 	bool "Enable Xilinx Zynq MPSoC firmware interface"
-	depends on ARCH_ZYNQMP
+	depends on ARCH_ZYNQMP || ICT_SERVE
 	default y if ARCH_ZYNQMP
 	select MFD_CORE
 	help

@@ -1719,6 +1719,7 @@ static int sdhci_arasan_probe(struct platform_device *pdev)
 		goto unreg_clk;
 	}
 
+#ifdef CONFIG_ARCH_ZYNQMP
 	if (of_device_is_compatible(np, "xlnx,zynqmp-8.9a")) {
 		ret = zynqmp_pm_is_function_supported(PM_IOCTL, IOCTL_SET_SD_CONFIG);
 		if (!ret) {
@@ -1727,6 +1728,7 @@ static int sdhci_arasan_probe(struct platform_device *pdev)
 				goto unreg_clk;
 		}
 	}
+#endif
 
 	sdhci_arasan->phy = ERR_PTR(-ENODEV);
 	if (of_device_is_compatible(np, "arasan,sdhci-5.1")) {

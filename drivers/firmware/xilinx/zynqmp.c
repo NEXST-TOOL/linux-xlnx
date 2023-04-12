@@ -190,13 +190,13 @@ static noinline int do_sbi_call(u64 pm_api_id, u64 arg0, u64 arg1,
 	ret = sbi_ecall(SERVE_EXT_PM, pm_api_id, arg0, arg1, arg2, arg3, 0, 0);
 
 	if (ret_payload) {
-		ret_payload[0] = lower_32_bits(ret.a0);
-		ret_payload[1] = upper_32_bits(ret.a0);
-		ret_payload[2] = lower_32_bits(ret.a1);
-		ret_payload[3] = upper_32_bits(ret.a1);
+		ret_payload[0] = lower_32_bits(ret.error);
+		ret_payload[1] = upper_32_bits(ret.error);
+		ret_payload[2] = lower_32_bits(ret.value);
+		ret_payload[3] = upper_32_bits(ret.value);
 	}
 
-	return zynqmp_pm_ret_code((enum pm_ret_status)ret.a0);
+	return zynqmp_pm_ret_code((enum pm_ret_status)ret.error);
 }
 #endif
 
@@ -271,7 +271,6 @@ int zynqmp_pm_feature(const u32 api_id)
 	return ret;
 }
 EXPORT_SYMBOL_GPL(zynqmp_pm_feature);
-#endif
 
 /**
  * zynqmp_pm_is_function_supported() - Check whether given IOCTL/QUERY function
@@ -316,6 +315,7 @@ int zynqmp_pm_is_function_supported(const u32 api_id, const u32 id)
 	return 0;
 }
 EXPORT_SYMBOL_GPL(zynqmp_pm_is_function_supported);
+#endif
 
 /**
  * zynqmp_pm_invoke_fn() - Invoke the system-level platform management layer
@@ -2873,11 +2873,13 @@ static int zynqmp_firmware_probe(struct platform_device *pdev)
 		}
 	}
 
+#ifdef CONFIG_ARCH_ZYNQMP
 	if (!feature_check_enabled) {
 		ret = do_feature_check_call(PM_FEATURE_CHECK);
 		if (ret >= 0)
 			feature_check_enabled = true;
 	}
+#endif
 
 	of_node_put(np);
 

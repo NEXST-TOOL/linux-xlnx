@@ -4769,6 +4769,7 @@ static int zynqmp_init(struct platform_device *pdev)
 				ret);
 			return ret;
 		}
+#ifdef CONFIG_ARCH_ZYNQMP
 		ret = zynqmp_pm_is_function_supported(PM_IOCTL, IOCTL_SET_GEM_CONFIG);
 		if (!ret) {
 			u32 pm_info[2];
@@ -4788,6 +4789,7 @@ static int zynqmp_init(struct platform_device *pdev)
 				return ret;
 		}
 	}
+#endif
 
 	/* Fully reset GEM controller at hardware level using zynqmp-reset driver,
 	 * if mapped in device tree.
