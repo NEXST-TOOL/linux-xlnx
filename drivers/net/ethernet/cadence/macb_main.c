@@ -4729,6 +4729,7 @@ static int init_reset_optional(struct platform_device *pdev)
 					     "failed to init SGMII PHY\n");
 	}
 
+#ifdef CONFIG_ARCH_ZYNQMP
 	ret = zynqmp_pm_is_function_supported(PM_IOCTL, IOCTL_SET_GEM_CONFIG);
 	if (!ret) {
 		u32 pm_info[2];
@@ -4747,6 +4748,7 @@ static int init_reset_optional(struct platform_device *pdev)
 		if (ret)
 			goto err_out_phy_exit;
 	}
+#endif
 
 	/* Fully reset controller at hardware level if mapped in device tree */
 	ret = device_reset_optional(&pdev->dev);
