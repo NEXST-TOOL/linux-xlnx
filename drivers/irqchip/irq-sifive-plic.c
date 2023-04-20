@@ -142,18 +142,12 @@ static int plic_set_affinity(struct irq_data *d,
 
 	cpumask_and(&amask, &priv->lmask, mask_val);
 
-	if (force)
-		cpu = cpumask_first(&amask);
-	else
-		cpu = cpumask_any_and(&amask, cpu_online_mask);
-
-	if (cpu >= nr_cpu_ids)
-		return -EINVAL;
-
 	plic_irq_toggle(&priv->lmask, d, 0);
-	plic_irq_toggle(cpumask_of(cpu), d, !irqd_irq_masked(d));
 
-	irq_data_update_effective_affinity(d, cpumask_of(cpu));
+	//enable S-Mode context of each online CPU core in PLIC
+	irq_data_update_effective_affinity(d, cpu_online_mask);
+
+	plic_irq_toggle(&priv->lmask, d, 1);
 
 	return IRQ_SET_MASK_OK_DONE;
 }
