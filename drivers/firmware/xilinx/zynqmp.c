@@ -1260,7 +1260,7 @@ unsigned int zynqmp_pm_bootmode_read(u32 *ps_mode)
 	u32 ret_payload[PAYLOAD_ARG_CNT];
 
 	ret = zynqmp_pm_invoke_fn(PM_MMIO_READ, CRL_APB_BOOT_PIN_CTRL, 0,
-				  0, 0, ret_payload);
+				  0, 0, 0, ret_payload);
 
 	*ps_mode = ret_payload[1];
 
@@ -1280,7 +1280,7 @@ EXPORT_SYMBOL_GPL(zynqmp_pm_bootmode_read);
 int zynqmp_pm_bootmode_write(u32 ps_mode)
 {
 	return zynqmp_pm_invoke_fn(PM_MMIO_WRITE, CRL_APB_BOOT_PIN_CTRL,
-				   CRL_APB_BOOTPIN_CTRL_MASK, ps_mode, 0, NULL);
+				   CRL_APB_BOOTPIN_CTRL_MASK, ps_mode, 0, 0, NULL);
 }
 EXPORT_SYMBOL_GPL(zynqmp_pm_bootmode_write);
 
@@ -1763,46 +1763,6 @@ int zynqmp_pm_mmio_write(u32 address, u32 mask, u32 value)
 				   value, 0, 0, NULL);
 }
 EXPORT_SYMBOL_GPL(zynqmp_pm_mmio_write);
-
-/**
- * zynqmp_pm_bootmode_read() - PM Config API for read bootpin status
- * @ps_mode: Returned output value of ps_mode
- *
- * This API function is to be used for notify the power management controller
- * to read bootpin status.
- *
- * Return: status, either success or error+reason
- */
-unsigned int zynqmp_pm_bootmode_read(u32 *ps_mode)
-{
-	unsigned int ret;
-	u32 ret_payload[PAYLOAD_ARG_CNT];
-
-	ret = zynqmp_pm_invoke_fn(PM_MMIO_READ, CRL_APB_BOOT_PIN_CTRL, 0,
-				  0, 0, 0, ret_payload);
-
-	*ps_mode = ret_payload[1];
-
-	return ret;
-}
-EXPORT_SYMBOL_GPL(zynqmp_pm_bootmode_read);
-
-/**
- * zynqmp_pm_bootmode_write() - PM Config API for Configure bootpin
- * @ps_mode: Value to be written to the bootpin ctrl register
- *
- * This API function is to be used for notify the power management controller
- * to configure bootpin.
- *
- * Return: Returns status, either success or error+reason
- */
-int zynqmp_pm_bootmode_write(u32 ps_mode)
-{
-	return zynqmp_pm_invoke_fn(PM_MMIO_WRITE, CRL_APB_BOOT_PIN_CTRL,
-				   CRL_APB_BOOTPIN_CTRL_MASK, ps_mode, 0,
-				   0, NULL);
-}
-EXPORT_SYMBOL_GPL(zynqmp_pm_bootmode_write);
 
 /**
  * zynqmp_pm_set_suspend_mode()	- Set system suspend mode
