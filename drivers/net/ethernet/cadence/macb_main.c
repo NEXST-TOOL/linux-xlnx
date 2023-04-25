@@ -4788,8 +4788,8 @@ static int zynqmp_init(struct platform_device *pdev)
 			if (ret < 0)
 				return ret;
 		}
-	}
 #endif
+	}
 
 	/* Fully reset GEM controller at hardware level using zynqmp-reset driver,
 	 * if mapped in device tree.
