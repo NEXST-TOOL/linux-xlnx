@@ -923,7 +923,7 @@ static struct notifier_block xenbus_resume_nb = {
 
 static irqreturn_t xenbus_late_init(int irq, void *unused)
 {
-	int err = 0;
+	int err;
 	uint64_t v = 0;
 
 	err = hvm_get_parameter(HVM_PARAM_STORE_PFN, &v);
@@ -987,37 +987,23 @@ static int __init xenbus_init(void)
 		 *
 		 * Also recognize all bits set as an invalid value.
 		 */
-		if (!v) {
+		if (!v || !~v) {
 			err = -ENOENT;
 			goto out_error;
 		}
-		if (v == ~0ULL) {
-			err = bind_evtchn_to_irqhandler(xen_store_evtchn,
-							xenbus_late_init,
-							0, "xenstore_late_init",
-							&xb_waitq);
-			if (err < 0) {
-				pr_err("xenstore_late_init couldn't bind irq err=%d\n",
-				       err);
-				return err;
-			}
-
-			xs_init_irq = err;
-		} else {
-			/* Avoid truncation on 32-bit. */
+		/* Avoid truncation on 32-bit. */
 #if BITS_PER_LONG == 32
-			if (v > ULONG_MAX) {
-				pr_err("%s: cannot handle HVM_PARAM_STORE_PFN=%llx > ULONG_MAX\n",
-						__func__, v);
-				err = -EINVAL;
-				goto out_error;
-			}
-#endif
-			xen_store_gfn = (unsigned long)v;
-			xen_store_interface =
-				xen_remap(xen_store_gfn << XEN_PAGE_SHIFT,
-					  XEN_PAGE_SIZE);
+		if (v > ULONG_MAX) {
+			pr_err("%s: cannot handle HVM_PARAM_STORE_PFN=%llx > ULONG_MAX\n",
+			       __func__, v);
+			err = -EINVAL;
+			goto out_error;
 		}
+#endif
+		xen_store_gfn = (unsigned long)v;
+		xen_store_interface =
+			xen_remap(xen_store_gfn << XEN_PAGE_SHIFT,
+				  XEN_PAGE_SIZE);
 		break;
 	default:
 		pr_warn("Xenstore state unknown\n");

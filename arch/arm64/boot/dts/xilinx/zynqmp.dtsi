@@ -239,20 +239,6 @@
 				compatible = "xlnx,zynqmp-pinctrl";
 				status = "disabled";
 			};
-
-			xlnx_keccak_384: sha384 {
-				compatible = "xlnx,zynqmp-keccak-384";
-			};
-
-			xlnx_rsa: zynqmp-rsa {
-				compatible = "xlnx,zynqmp-rsa";
-			};
-
-			modepin_gpio: gpio {
-				compatible = "xlnx,zynqmp-gpio-modepin";
-				gpio-controller;
-				#gpio-cells = <2>;
-			};
 		};
 	};
 
@@ -783,6 +769,7 @@
 					<0x0 0x0 0x0 0x2 &pcie_intc 0x2>,
 					<0x0 0x0 0x0 0x3 &pcie_intc 0x3>,
 					<0x0 0x0 0x0 0x4 &pcie_intc 0x4>;
+			#stream-id-cells = <1>;
 			iommus = <&smmu 0x4d0>;
 			power-domains = <&zynqmp_firmware PD_PCIE>;
 			pcie_intc: legacy-interrupt-controller {
@@ -835,9 +822,9 @@
 			interrupts = <0 133 4>;
 			power-domains = <&zynqmp_firmware PD_SATA>;
 			resets = <&zynqmp_reset ZYNQMP_RESET_SATA>;
-			/* iommus = <&smmu 0x4c0>, <&smmu 0x4c1>, */
-			/*	 <&smmu 0x4c2>, <&smmu 0x4c3>; */
-			/* dma-coherent; */
+			#stream-id-cells = <4>;
+			iommus = <&smmu 0x4c0>, <&smmu 0x4c1>,
+				 <&smmu 0x4c2>, <&smmu 0x4c3>;
 		};
 
 		sdhci0: mmc@ff160000 {
@@ -951,7 +938,6 @@
 		};
 
 		uart0: serial@ff000000 {
-			u-boot,dm-pre-reloc;
 			compatible = "xlnx,zynqmp-uart", "cdns,uart-r1p12";
 			status = "disabled";
 			interrupt-parent = <&gic>;
@@ -962,7 +948,6 @@
 		};
 
 		uart1: serial@ff010000 {
-			u-boot,dm-pre-reloc;
 			compatible = "xlnx,zynqmp-uart", "cdns,uart-r1p12";
 			status = "disabled";
 			interrupt-parent = <&gic>;
@@ -972,7 +957,7 @@
 			power-domains = <&zynqmp_firmware PD_UART_1>;
 		};
 
-		usb0: usb0@ff9d0000 {
+		usb0: usb@ff9d0000 {
 			#address-cells = <2>;
 			#size-cells = <2>;
 			status = "disabled";
@@ -984,29 +969,22 @@
 				 <&zynqmp_reset ZYNQMP_RESET_USB0_HIBERRESET>,
 				 <&zynqmp_reset ZYNQMP_RESET_USB0_APB>;
 			reset-names = "usb_crst", "usb_hibrst", "usb_apbrst";
-			reset-gpios = <&modepin_gpio 1 GPIO_ACTIVE_LOW>;
 			ranges;
 
 			dwc3_0: usb@fe200000 {
 				compatible = "snps,dwc3";
-				status = "disabled";
 				reg = <0x0 0xfe200000 0x0 0x40000>;
 				interrupt-parent = <&gic>;
-				interrupt-names = "dwc_usb3", "otg", "hiber";
-				interrupts = <0 65 4>, <0 69 4>, <0 75 4>;
+				interrupt-names = "dwc_usb3", "otg";
+				interrupts = <0 65 4>, <0 69 4>;
+				#stream-id-cells = <1>;
 				iommus = <&smmu 0x860>;
 				snps,quirk-frame-length-adjustment = <0x20>;
-				snps,refclk_fladj;
-				clock-names = "ref";
-				snps,enable_guctl1_resume_quirk;
-				snps,enable_guctl1_ipd_quirk;
-				snps,xhci-reset-on-resume;
-				snps,xhci-stream-quirk;
 				/* dma-coherent; */
 			};
 		};
 
-		usb1: usb1@ff9e0000 {
+		usb1: usb@ff9e0000 {
 			#address-cells = <2>;
 			#size-cells = <2>;
 			status = "disabled";
@@ -1022,19 +1000,13 @@
 
 			dwc3_1: usb@fe300000 {
 				compatible = "snps,dwc3";
-				status = "disabled";
 				reg = <0x0 0xfe300000 0x0 0x40000>;
 				interrupt-parent = <&gic>;
-				interrupt-names = "dwc_usb3", "otg", "hiber";
-				interrupts = <0 70 4>, <0 74 4>, <0 76 4>;
+				interrupt-names = "dwc_usb3", "otg";
+				interrupts = <0 70 4>, <0 74 4>;
+				#stream-id-cells = <1>;
 				iommus = <&smmu 0x861>;
 				snps,quirk-frame-length-adjustment = <0x20>;
-				snps,refclk_fladj;
-				clock-names = "ref";
-				snps,enable_guctl1_resume_quirk;
-				snps,enable_guctl1_ipd_quirk;
-				snps,xhci-reset-on-resume;
-				snps,xhci-stream-quirk;
 				/* dma-coherent; */
 			};
 		};

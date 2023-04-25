@@ -2141,7 +2141,7 @@ static int xudc_probe(struct platform_device *pdev)
 
 	ret = usb_add_gadget_udc(&pdev->dev, &udc->gadget);
 	if (ret)
-		goto fail;
+		goto err_disable_unprepare_clk;
 
 	udc->dev = &udc->gadget.dev;
 
@@ -2160,6 +2160,9 @@ static int xudc_probe(struct platform_device *pdev)
 		 udc->dma_enabled ? "with DMA" : "without DMA");
 
 	return 0;
+
+err_disable_unprepare_clk:
+	clk_disable_unprepare(udc->clk);
 fail:
 	dev_err(&pdev->dev, "probe failed, %d\n", ret);
 	return ret;

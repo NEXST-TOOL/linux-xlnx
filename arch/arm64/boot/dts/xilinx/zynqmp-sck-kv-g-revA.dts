@@ -168,6 +168,8 @@
 	mdio: mdio {
 		#address-cells = <1>;
 		#size-cells = <0>;
+		reset-gpios = <&gpio 38 GPIO_ACTIVE_LOW>;
+		reset-delay-us = <2>;
 
 		phy0: ethernet-phy@1 {
 			#phy-cells = <1>;
@@ -285,6 +287,7 @@
 	pinctrl_usb0_default: usb0-default {
 		conf {
 			groups = "usb0_0_grp";
+			slew-rate = <SLEW_RATE_SLOW>;
 			power-source = <IO_STANDARD_LVCMOS18>;
 		};
 
