@@ -49,7 +49,13 @@ endif
 riscv-march-$(CONFIG_ARCH_RV32I)	:= rv32ima
 riscv-march-$(CONFIG_ARCH_RV64I)	:= rv64ima
 riscv-march-$(CONFIG_FPU)		:= $(riscv-march-y)fd
-riscv-march-$(CONFIG_RISCV_ISA_C)	:= $(riscv-march-y)c_zicsr_zifencei
+
+riscv-march-$(CONFIG_RISCV_ISA_C)	:= $(riscv-march-y)c
+CC_GREATE_12 := $(shell expr `$(CC) -dumpversion | cut -f1 -d.` \>= 12)
+ifeq "$(CC_GREATE_12)" "1"
+riscv-march-$(CONFIG_RISCV_ISA_C)	:= riscv-march-$(CONFIG_RISCV_ISA_C)_zicsr_zifencei
+endif
+
 KBUILD_CFLAGS += -march=$(subst fd,,$(riscv-march-y))
 KBUILD_AFLAGS += -march=$(riscv-march-y)
 
