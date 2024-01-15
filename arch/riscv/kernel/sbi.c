@@ -616,3 +616,24 @@ void __init sbi_init(void)
 
 	riscv_set_ipi_ops(&sbi_ipi_ops);
 }
+
+static unsigned long sbi_exp_perf_call(unsigned long fid, unsigned long arg0,
+				       unsigned long arg1)
+{
+	struct sbiret ret;
+	ret = sbi_ecall(SBI_EXT_EXP_PERF, fid, arg0, arg1, 0, 0, 0, 0);
+	if (!ret.error)
+		return ret.value;
+	else
+		return sbi_err_map_linux_errno(ret.error);
+}
+
+unsigned long sbi_exp_perf_get(unsigned long csr)
+{
+	return sbi_exp_perf_call(0x1, csr, 0);
+}
+
+unsigned long sbi_exp_perf_set(unsigned long csr, unsigned long data)
+{
+	return sbi_exp_perf_call(0x0, csr, data);
+}

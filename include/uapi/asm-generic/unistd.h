@@ -883,8 +883,14 @@ __SYSCALL(__NR_process_mrelease, sys_process_mrelease)
 #define __NR_futex_waitv 449
 __SYSCALL(__NR_futex_waitv, sys_futex_waitv)
 
+#define __NR_riscv_set_perf 450
+__SYSCALL(__NR_riscv_set_perf, sys_riscv_set_perf)
+
+#define __NR_riscv_get_perf 451
+__SYSCALL(__NR_riscv_get_perf, sys_riscv_get_perf)
+
 #undef __NR_syscalls
-#define __NR_syscalls 450
+#define __NR_syscalls 452
 
 /*
  * 32 bit systems traditionally used different

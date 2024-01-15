@@ -392,6 +392,8 @@ COND_SYSCALL(spu_run);
 COND_SYSCALL(spu_create);
 COND_SYSCALL(subpage_prot);
 
+COND_SYSCALL(riscv_get_perf);
+COND_SYSCALL(riscv_set_perf);
 
 /*
  * Deprecated system calls which are still defined in
