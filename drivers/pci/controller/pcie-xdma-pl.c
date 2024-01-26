@@ -747,32 +747,6 @@ static int xilinx_pcie_register_host(struct pci_host_bridge *host)
 }
 
 /**
- * xilinx_pcie_request_resources - add resources to list
- * @pcie: Xilinx PCIe structure
- *
- * Return: '0' on success and error value on failure
- */
-static int xilinx_pcie_request_resources(struct xilinx_pcie *pcie)
-{
-	struct pci_host_bridge *host = pci_host_bridge_from_priv(pcie);
-	struct list_head *windows = &host->windows;
-	struct device *dev = pcie->dev;
-	int err;
-
-	pci_add_resource_offset(windows, &pcie->pio, pcie->offset.io);
-	pci_add_resource_offset(windows, &pcie->mem, pcie->offset.mem);
-	pci_add_resource(windows, &pcie->busn);
-
-	err = devm_request_pci_bus_resources(dev, windows);
-	if (err < 0)
-		return err;
-
-	pci_remap_iospace(&pcie->pio, pcie->io.start);
-
-	return 0;
-}
-
-/**
  * xilinx_pcie_init_port - Initialize hardware
  * @port: PCIe port information
  */
@@ -1153,11 +1127,6 @@ static int xilinx_pcie_probe(struct platform_device *pdev)
 		dev_err(dev, "Parsing DT failed\n");
 		return err;
 	}
-
-	/*Add resources of I/O, memory and bus*/
-	err = xilinx_pcie_request_resources(pcie);
-	if (err)
-		goto put_resources;
 
 	/*register tree-like PCIe resources to host*/
 	err = xilinx_pcie_register_host(bridge);
