@@ -796,6 +796,11 @@ static int xilinx_pcie_setup_msi_cpu_mask(int irq, int cpu)
 {
 	cpumask_var_t mask;
 	int err;
+
+	int num_cpus = num_possible_cpus();
+
+	if ((num_cpus == 1) && cpu)
+		cpu = 0;
 	
 	if (alloc_cpumask_var(&mask, GFP_KERNEL))
 	{
